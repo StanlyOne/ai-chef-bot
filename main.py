@@ -28,10 +28,10 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 if not BOT_TOKEN:
-    raise ValueError("Нет BOT_TOKEN в .env")
+    print("❌ BOT_TOKEN не найден")
 
 if not GROQ_API_KEY:
-    raise ValueError("Нет GROQ_API_KEY в .env")
+    print("❌ GROQ_API_KEY не найден")
 
 # =========================
 # GROQ CLIENT

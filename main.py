@@ -1,6 +1,7 @@
 import os
 import logging
 import requests
+import asyncio
 
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -12,8 +13,8 @@ from aiogram.types import (
     KeyboardButton,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
-    BufferedInputFile,
-    CallbackQuery
+    CallbackQuery,
+    BufferedInputFile
 )
 
 from aiogram.filters import CommandStart
@@ -21,14 +22,13 @@ from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 
 # =========================================
-# ENV
+# LOAD ENV
 # =========================================
 
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-TOGETHER_API_KEY = os.getenv("TOGETHER_API_KEY")
 
 # =========================================
 # LOGGING
@@ -41,13 +41,10 @@ logging.basicConfig(level=logging.INFO)
 # =========================================
 
 if not BOT_TOKEN:
-    print("❌ BOT_TOKEN не найден")
+    raise ValueError("❌ BOT_TOKEN не найден")
 
 if not GROQ_API_KEY:
-    print("❌ GROQ_API_KEY не найден")
-
-if not TOGETHER_API_KEY:
-    print("❌ TOGETHER_API_KEY не найден")
+    raise ValueError("❌ GROQ_API_KEY не найден")
 
 # =========================================
 # GROQ CLIENT
@@ -84,49 +81,62 @@ saved_recipes = {}
 # =========================================
 
 system_prompt = """
-Ты профессиональный шеф-повар Michelin уровня.
+Ты профессиональный шеф-повар высокого уровня.
 
 Ты создаешь:
-- современные ресторанные блюда
-- красивые подачи
-- реальные техники приготовления
-- вкусные сочетания
+- современные
+- вкусные
+- реалистичные
+- ресторанные рецепты
 
-НЕЛЬЗЯ:
+Главная задача:
+делать блюда которые реально существуют и которые захотят приготовить люди.
+
+НЕ ИСПОЛЬЗУЙ:
 - markdown
 - **
 - ###
-- ссылки
-- странные рецепты
-- выдуманные ингредиенты
+- странные сочетания
+- выдуманные блюда
+- перевод с английского
+- слова вроде "oil", "Meanwhile"
 
-НУЖНО:
-- понятный текст
-- красивые описания
-- реальные рецепты
-- температуры
-- граммовки
-- советы шефа
+Пиши:
+- живым человеческим языком
+- как настоящий шеф
+- красиво
+- аппетитно
+- понятно
 
-Формат:
+Структура ответа:
 
 Название блюда
 
-Описание блюда
+Краткое описание блюда
 
 Ингредиенты:
-- ...
+• ...
 
 Приготовление:
 1. ...
 2. ...
+3. ...
 
-Советы шефа:
+Совет шефа:
 ...
+
+Если пользователь пишет:
+- "ПП" → healthy recipes
+- "десерт" → красивые десерты
+- "мясо" → premium meat dishes
+- "быстро" → рецепты до 30 минут
+
+Очень важно:
+рецепты должны быть реалистичными и вкусными.
 """
 
 # =========================================
-# MAIN KEYBOARD
+# KEYBOARD
 # =========================================
 
 main_keyboard = ReplyKeyboardMarkup(
@@ -176,7 +186,19 @@ def recipe_inline():
 
 def generate_food_image(prompt):
 
-    image_url = f"https://image.pollinations.ai/prompt/{prompt} gourmet food photography ultra realistic"
+    final_prompt = f"""
+{prompt},
+ultra realistic food photography,
+michelin restaurant dish,
+beautiful plating,
+cinematic lighting,
+professional food styling,
+high detail,
+gourmet presentation,
+instagram food shot
+"""
+
+    image_url = f"https://image.pollinations.ai/prompt/{final_prompt}"
 
     response = requests.get(image_url)
 
@@ -312,7 +334,9 @@ async def generate_photo(callback: CallbackQuery):
 
     try:
 
-        image_bytes = generate_food_image(recipe)
+        dish_name = recipe.split("\n")[0]
+
+        image_bytes = generate_food_image(dish_name)
 
         photo = BufferedInputFile(
             image_bytes,
@@ -321,7 +345,7 @@ async def generate_photo(callback: CallbackQuery):
 
         await callback.message.answer_photo(
             photo=photo,
-            caption="📸 Ваше блюдо от AI ШЕФА"
+            caption=f"📸 {dish_name}"
         )
 
         await wait_msg.delete()
@@ -381,6 +405,4 @@ async def main():
 # =========================================
 
 if __name__ == "__main__":
-    import asyncio
-
     asyncio.run(main())

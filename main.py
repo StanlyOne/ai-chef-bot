@@ -185,12 +185,11 @@ def generate_food_image(prompt):
         "model": "black-forest-labs/FLUX.1-schnell-Free",
         "prompt": f"""
 ultra realistic gourmet food photography,
-restaurant presentation,
+restaurant plating,
+professional food styling,
 cinematic lighting,
 high detail,
-instagram food style,
-professional plating,
-delicious premium dish,
+instagram food photo,
 {prompt}
 """,
         "width": 1024,
@@ -208,7 +207,16 @@ delicious premium dish,
 
     print(result)
 
-    image_url = result["data"][0]["url"]
+    # универсальная проверка ответа
+
+    if "data" in result:
+        image_url = result["data"][0]["url"]
+
+    elif "output" in result:
+        image_url = result["output"]["choices"][0]["image_url"]
+
+    else:
+        raise Exception(f"Неизвестный ответ API: {result}")
 
     image_response = requests.get(image_url)
 

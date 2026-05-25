@@ -1,31 +1,48 @@
-import asyncio
-import logging
 import os
 import re
+import asyncio
+import logging
+import requests
+import edge_tts
+
+from io import BytesIO
+from dotenv import load_dotenv
+from openai import OpenAI
 
 from aiogram import Bot, Dispatcher, F
-from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ParseMode
-from aiogram.filters import CommandStart
 from aiogram.types import (
     Message,
     ReplyKeyboardMarkup,
     KeyboardButton,
-    FSInputFile
+    FSInputFile,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    BufferedInputFile,
+    CallbackQuery
 )
-
-from dotenv import load_dotenv
-from openai import OpenAI
-import edge_tts
+from aiogram.filters import CommandStart
+from aiogram.enums import ParseMode
+from aiogram.client.default import DefaultBotProperties
 
 # =========================
-# ЗАГРУЗКА .ENV
+# ЗАГРУЗКА ENV
 # =========================
 
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+TOGETHER_API_KEY = os.getenv("TOGETHER_API_KEY")
+
+# =========================
+# ЛОГИ
+# =========================
+
+logging.basicConfig(level=logging.INFO)
+
+# =========================
+# ПРОВЕРКА КЛЮЧЕЙ
+# =========================
 
 if not BOT_TOKEN:
     print("❌ BOT_TOKEN не найден")
@@ -33,8 +50,11 @@ if not BOT_TOKEN:
 if not GROQ_API_KEY:
     print("❌ GROQ_API_KEY не найден")
 
+if not TOGETHER_API_KEY:
+    print("❌ TOGETHER_API_KEY не найден")
+
 # =========================
-# GROQ CLIENT
+# AI CLIENT
 # =========================
 
 client = OpenAI(
@@ -43,41 +63,21 @@ client = OpenAI(
 )
 
 # =========================
-# BOT
+# TELEGRAM
 # =========================
 
 bot = Bot(
     token=BOT_TOKEN,
-    default=DefaultBotProperties(
-        parse_mode=ParseMode.HTML
-    )
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
 )
 
 dp = Dispatcher()
 
-logging.basicConfig(level=logging.INFO)
-
 # =========================
-# КНОПКИ
+# ПАМЯТЬ РЕЦЕПТОВ
 # =========================
 
-keyboard = ReplyKeyboardMarkup(
-    keyboard=[
-        [
-            KeyboardButton(text="🥗 ПП рецепт"),
-            KeyboardButton(text="🍝 Итальянская кухня")
-        ],
-        [
-            KeyboardButton(text="🥩 Мясное блюдо"),
-            KeyboardButton(text="🍰 Десерт")
-        ],
-        [
-            KeyboardButton(text="⚡ Быстрый рецепт"),
-            KeyboardButton(text="🎤 Голосовой рецепт")
-        ]
-    ],
-    resize_keyboard=True
-)
+last_recipes = {}
 
 # =========================
 # SYSTEM PROMPT
@@ -86,73 +86,86 @@ keyboard = ReplyKeyboardMarkup(
 system_prompt = """
 Ты профессиональный шеф-повар уровня Michelin.
 
-Ты специализируешься на:
-- современной гастрономии
-- ресторанной кухне
-- японской кухне
-- итальянской кухне
-- французской кухне
-- правильных техниках приготовления
+Ты создаешь:
+- реальные
+- вкусные
+- современные
+- ресторанные рецепты
 
-КРИТИЧЕСКИ ВАЖНО:
-Никогда не выдумывай блюда и техники.
-Если пользователь пишет конкретное название блюда —
-готовь только классическую или современную реальную версию этого блюда.
+ВАЖНО:
+- не выдумывай блюда
+- не пиши бред
+- не используй markdown
+- не используй **
+- не используй ###
+- не отправляй ссылки
+- только реальные техники приготовления
 
-Например:
-- татаки = обожженное мясо rare
-- карбонара = без сливок
-- ризотто = с постепенным добавлением бульона
-- том ям = на основе пасты том ям
+Используй:
+- граммы
+- миллилитры
+- температуры
+- время приготовления
 
-Запрещено:
-- выдумывать ингредиенты
-- делать странные сочетания
-- панировать татаки
-- писать бредовые рецепты
-- использовать markdown
-- использовать ссылки
-- использовать звездочки
-- использовать решетки
-
-Правила:
-- только граммы и миллилитры
-- кратко
-- профессионально
-- вкусно
-- современная подача
-- понятные шаги
-- реальные технологии приготовления
-
-Формат ответа:
+Формат:
 
 Название блюда
 
-Краткое описание блюда.
+Краткое описание
 
 Ингредиенты:
-- 500 г ...
-- 10 мл ...
+- ...
 
 Приготовление:
 1. ...
 2. ...
-3. ...
 
 Советы шефа:
 ...
 """
 
 # =========================
-# START
+# КЛАВИАТУРА
 # =========================
 
-@dp.message(CommandStart())
-async def start_handler(message: Message):
-    await message.answer(
-        "👨‍🍳 Добро пожаловать в AI ШЕФ БОТ!\n\n"
-        "Выбери категорию или напиши свой рецепт 🍽",
-        reply_markup=keyboard
+main_keyboard = ReplyKeyboardMarkup(
+    keyboard=[
+        [
+            KeyboardButton(text="🥗 ПП рецепт"),
+            KeyboardButton(text="🔥 Быстрый рецепт")
+        ],
+        [
+            KeyboardButton(text="🍰 Десерт"),
+            KeyboardButton(text="🥩 Мясо")
+        ],
+        [
+            KeyboardButton(text="🎤 Голосовой шеф"),
+            KeyboardButton(text="🥬 Холодильник")
+        ]
+    ],
+    resize_keyboard=True
+)
+
+# =========================
+# INLINE КНОПКИ
+# =========================
+
+def recipe_inline():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="📸 Сгенерировать фото",
+                    callback_data="generate_photo"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="💾 Сохранить рецепт",
+                    callback_data="save_recipe"
+                )
+            ]
+        ]
     )
 
 # =========================
@@ -160,161 +173,199 @@ async def start_handler(message: Message):
 # =========================
 
 def clean_voice_text(text):
+    text = re.sub(r"[#*]", "", text)
+    text = re.sub(r"📸|🔥|🥩|🍰|🥗|🎤|🥬|💾", "", text)
+    text = re.sub(r"\n+", ". ", text)
 
-    text = re.sub(r'[^\w\s.,!?():%-]', '', text)
-
-    text = text.replace("Ингредиенты:", "\nИнгредиенты.\n")
-    text = text.replace("Пошаговые инструкции:", "\nПошаговые инструкции.\n")
-    text = text.replace("*", "")
-    text = text.replace("•", "")
-    text = text.replace("Шаг 1", "\nШаг 1.")
-    text = text.replace("Шаг 2", "\nШаг 2.")
-    text = text.replace("Шаг 3", "\nШаг 3.")
-    text = text.replace("Шаг 4", "\nШаг 4.")
-    text = text.replace("Шаг 5", "\nШаг 5.")
+    text = text.replace("Ингредиенты:", ". Ингредиенты. ")
+    text = text.replace("Приготовление:", ". Приготовление. ")
+    text = text.replace("Советы шефа:", ". Советы шефа. ")
 
     return text
 
 # =========================
-# AI ОТВЕТ
-# =========================
-
-async def generate_recipe(user_text):
-
-    completion = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
-        messages=[
-            {
-                "role": "system", "content": system_prompt
-            },
-            {
-                "role": "user",
-                "content": user_text
-            }
-        ],
-        temperature=0.6,
-        max_tokens=700
-    )
-
-    return completion.choices[0].message.content
-
-# =========================
-# ГОЛОС
+# ГЕНЕРАЦИЯ ГОЛОСА
 # =========================
 
 async def generate_voice(text):
 
-    clean_text = clean_voice_text(text)
+    cleaned = clean_voice_text(text)
 
     communicate = edge_tts.Communicate(
-        clean_text,
-        voice="ru-RU-SvetlanaNeural",
-        rate="+10%",
-        pitch="+8Hz"
+        text=cleaned,
+        voice="ru-RU-SvetaNeural",
+        rate="-10%"
     )
 
     await communicate.save("voice.mp3")
 
 # =========================
-# ОБЩИЙ ПРОЦЕСС
+# ГЕНЕРАЦИЯ ФОТО
 # =========================
 
-async def process_request(message: Message, prompt):
+def generate_food_image(prompt):
 
-    wait_msg = await message.answer(
-        "👨‍🍳 Шеф готовит рецепт..."
+    headers = {
+        "Authorization": f"Bearer {TOGETHER_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "model": "black-forest-labs/FLUX.1-schnell-Free",
+        "prompt": f"""
+        ultra realistic instagram food photography,
+        gourmet restaurant plating,
+        professional food styling,
+        cinematic lighting,
+        high detail,
+        delicious food,
+        {prompt}
+        """,
+        "steps": 4
+    }
+
+    response = requests.post(
+        "https://api.together.xyz/v1/images/generations",
+        headers=headers,
+        json=payload
     )
+
+    data = response.json()
+
+    image_url = data["data"][0]["url"]
+
+    image_response = requests.get(image_url)
+
+    return image_response.content
+
+# =========================
+# START
+# =========================
+
+@dp.message(CommandStart())
+async def start(message: Message):
+
+    await message.answer(
+        "👨‍🍳 Добро пожаловать в AI ШЕФ БОТ\n\n"
+        "Я помогу создать ресторанные рецепты, "
+        "озвучу их и даже покажу как выглядит блюдо 📸",
+        reply_markup=main_keyboard
+    )
+
+# =========================
+# ОБРАБОТКА СООБЩЕНИЙ
+# =========================
+
+@dp.message()
+async def chef(message: Message):
+
+    user_text = message.text
+
+    thinking = await message.answer("👨‍🍳 Шеф готовит рецепт...")
 
     try:
 
-        # AI
-        response_text = await generate_recipe(prompt)
-
-        # Текст
-        await message.answer(response_text)
-
-        # Голос
-        await generate_voice(response_text)
-
-        voice = FSInputFile("voice.mp3")
-
-        await message.answer_voice(
-            voice=voice
+        completion = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {
+                    "role": "system",
+                    "content": system_prompt
+                },
+                {
+                    "role": "user",
+                    "content": user_text
+                }
+            ],
+            temperature=0.7
         )
 
-        # Удаляем ожидание
-        try:
-            await wait_msg.delete()
-        except:
-            pass
+        recipe = completion.choices[0].message.content
+
+        # СОХРАНЯЕМ ПОСЛЕДНИЙ РЕЦЕПТ
+        last_recipes[message.chat.id] = recipe
+
+        await thinking.delete()
+
+        # ОТПРАВКА ТЕКСТА
+        await message.answer(
+            recipe,
+            reply_markup=recipe_inline()
+        )
+
+        # ГОЛОС
+        await generate_voice(recipe)
+
+        voice_file = FSInputFile("voice.mp3")
+
+        await message.answer_voice(
+            voice=voice_file
+        )
 
     except Exception as e:
 
         try:
-            await wait_msg.delete()
+            await thinking.delete()
         except:
             pass
 
         await message.answer(
-            f"❌ Ошибка:\n{str(e)}"
+            f"❌ Ошибка:\n{e}"
         )
 
 # =========================
-# КНОПКИ
+# INLINE: ФОТО
 # =========================
 
-@dp.message(F.text == "🥗 ПП рецепт")
-async def pp_recipe(message: Message):
-    await process_request(
-        message,
-        "Придумай современный ПП рецепт"
+@dp.callback_query(F.data == "generate_photo")
+async def generate_photo(callback: CallbackQuery):
+
+    recipe = last_recipes.get(callback.message.chat.id)
+
+    if not recipe:
+        await callback.message.answer(
+            "❌ Сначала создайте рецепт"
+        )
+        return
+
+    wait_msg = await callback.message.answer(
+        "📸 Генерирую фото блюда..."
     )
 
-@dp.message(F.text == "🍝 Итальянская кухня")
-async def italian_recipe(message: Message):
-    await process_request(
-        message,
-        "Придумай рецепт итальянской кухни"
-    )
+    try:
 
-@dp.message(F.text == "🥩 Мясное блюдо")
-async def meat_recipe(message: Message):
-    await process_request(
-        message,
-        "Придумай мясное блюдо ресторанного уровня"
-    )
+        image_bytes = generate_food_image(recipe)
 
-@dp.message(F.text == "🍰 Десерт")
-async def dessert_recipe(message: Message):
-    await process_request(
-        message,
-        "Придумай красивый десерт"
-    )
+        photo = BufferedInputFile(
+            image_bytes,
+            filename="dish.png"
+        )
 
-@dp.message(F.text == "⚡ Быстрый рецепт")
-async def fast_recipe(message: Message):
-    await process_request(
-        message,
-        "Придумай быстрый рецепт за 15 минут"
-    )
+        await callback.message.answer_photo(
+            photo=photo,
+            caption="📸 Ваше блюдо от AI ШЕФА"
+        )
 
-@dp.message(F.text == "🎤 Голосовой рецепт")
-async def voice_recipe(message: Message):
-    await process_request(
-        message,
-        "Придумай интересный рецепт и озвучь его"
-    )
+        await wait_msg.delete()
+
+    except Exception as e:
+
+        await wait_msg.delete()
+
+        await callback.message.answer(
+            f"❌ Ошибка генерации фото:\n{e}"
+        )
 
 # =========================
-# ЛЮБОЙ ТЕКСТ
+# INLINE: СОХРАНЕНИЕ
 # =========================
 
-@dp.message()
-async def chat_handler(message: Message):
+@dp.callback_query(F.data == "save_recipe")
+async def save_recipe(callback: CallbackQuery):
 
-    await process_request(
-        message,
-        message.text
+    await callback.message.answer(
+        "💾 Рецепт сохранён в избранное\n\n"
+        "Система памяти будет добавлена в следующем апгрейде 🔥"
     )
 
 # =========================
@@ -327,6 +378,8 @@ async def main():
 
     await dp.start_polling(bot)
 
+# =========================
+# RUN
 # =========================
 
 if __name__ == "__main__":

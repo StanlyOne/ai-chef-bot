@@ -176,51 +176,11 @@ def recipe_inline():
 
 def generate_food_image(prompt):
 
-    headers = {
-        "Authorization": f"Bearer {TOGETHER_API_KEY}",
-        "Content-Type": "application/json"
-    }
+    image_url = f"https://image.pollinations.ai/prompt/{prompt} gourmet food photography ultra realistic"
 
-    payload = {
-        "model": "black-forest-labs/FLUX.1-schnell-Free",
-        "prompt": f"""
-ultra realistic gourmet food photography,
-restaurant plating,
-professional food styling,
-cinematic lighting,
-high detail,
-instagram food photo,
-{prompt}
-""",
-        "width": 1024,
-        "height": 1024,
-        "steps": 4
-    }
+    response = requests.get(image_url)
 
-    response = requests.post(
-        "https://api.together.xyz/v1/images/generations",
-        headers=headers,
-        json=payload
-    )
-
-    result = response.json()
-
-    print(result)
-
-    # универсальная проверка ответа
-
-    if "data" in result:
-        image_url = result["data"][0]["url"]
-
-    elif "output" in result:
-        image_url = result["output"]["choices"][0]["image_url"]
-
-    else:
-        raise Exception(f"Неизвестный ответ API: {result}")
-
-    image_response = requests.get(image_url)
-
-    return image_response.content
+    return response.content
 
 # =========================================
 # START

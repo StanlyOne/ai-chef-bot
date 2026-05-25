@@ -1,10 +1,6 @@
 import os
-import re
-import asyncio
 import logging
 import requests
-import edge_tts
-import base64
 
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -14,12 +10,12 @@ from aiogram.types import (
     Message,
     ReplyKeyboardMarkup,
     KeyboardButton,
-    FSInputFile,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     BufferedInputFile,
     CallbackQuery
 )
+
 from aiogram.filters import CommandStart
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
@@ -35,13 +31,13 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 TOGETHER_API_KEY = os.getenv("TOGETHER_API_KEY")
 
 # =========================================
-# LOGS
+# LOGGING
 # =========================================
 
 logging.basicConfig(level=logging.INFO)
 
 # =========================================
-# ПРОВЕРКА КЛЮЧЕЙ
+# CHECK TOKENS
 # =========================================
 
 if not BOT_TOKEN:
@@ -76,10 +72,12 @@ bot = Bot(
 dp = Dispatcher()
 
 # =========================================
-# ПАМЯТЬ
+# MEMORY
 # =========================================
 
 last_recipes = {}
+
+saved_recipes = {}
 
 # =========================================
 # SYSTEM PROMPT
@@ -89,30 +87,32 @@ system_prompt = """
 Ты профессиональный шеф-повар Michelin уровня.
 
 Ты создаешь:
-- современные
-- реалистичные
-- вкусные
-- ресторанные рецепты
+- современные ресторанные блюда
+- красивые подачи
+- реальные техники приготовления
+- вкусные сочетания
 
 НЕЛЬЗЯ:
-- придумывать странные блюда
-- использовать markdown
-- использовать **
-- использовать ###
-- отправлять ссылки
-- писать бред
+- markdown
+- **
+- ###
+- ссылки
+- странные рецепты
+- выдуманные ингредиенты
 
 НУЖНО:
-- реальные техники
-- реальные температуры
-- граммы
-- время приготовления
+- понятный текст
+- красивые описания
+- реальные рецепты
+- температуры
+- граммовки
+- советы шефа
 
-Формат ответа:
+Формат:
 
 Название блюда
 
-Краткое описание
+Описание блюда
 
 Ингредиенты:
 - ...
@@ -126,7 +126,7 @@ system_prompt = """
 """
 
 # =========================================
-# KEYBOARD
+# MAIN KEYBOARD
 # =========================================
 
 main_keyboard = ReplyKeyboardMarkup(
@@ -140,8 +140,8 @@ main_keyboard = ReplyKeyboardMarkup(
             KeyboardButton(text="🥩 Мясо")
         ],
         [
-            KeyboardButton(text="🎤 Голосовой шеф"),
-            KeyboardButton(text="🥬 Холодильник")
+            KeyboardButton(text="🥬 Холодильник"),
+            KeyboardButton(text="💾 Избранное")
         ]
     ],
     resize_keyboard=True
@@ -152,6 +152,7 @@ main_keyboard = ReplyKeyboardMarkup(
 # =========================================
 
 def recipe_inline():
+
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -170,55 +171,6 @@ def recipe_inline():
     )
 
 # =========================================
-# CLEAN TEXT
-# =========================================
-
-def clean_voice_text(text):
-
-    text = re.sub(r"[#*]", "", text)
-
-    text = re.sub(
-        r"📸|🔥|🥩|🍰|🥗|🎤|🥬|💾",
-        "",
-        text
-    )
-
-    text = text.replace(
-        "Ингредиенты:",
-        ". Ингредиенты. "
-    )
-
-    text = text.replace(
-        "Приготовление:",
-        ". Приготовление. "
-    )
-
-    text = text.replace(
-        "Советы шефа:",
-        ". Советы шефа. "
-    )
-
-    text = re.sub(r"\n+", ". ", text)
-
-    return text
-
-# =========================================
-# VOICE
-# =========================================
-
-async def generate_voice(text):
-
-    cleaned = clean_voice_text(text)
-
-    communicate = edge_tts.Communicate(
-        text=cleaned,
-        voice="ru-RU-SvetaNeural",
-        rate="-10%"
-    )
-
-    await communicate.save("voice.ogg")
-
-# =========================================
 # IMAGE GENERATION
 # =========================================
 
@@ -232,17 +184,18 @@ def generate_food_image(prompt):
     payload = {
         "model": "black-forest-labs/FLUX.1-schnell-Free",
         "prompt": f"""
-ultra realistic instagram food photography,
-gourmet restaurant plating,
-professional food styling,
+ultra realistic gourmet food photography,
+restaurant presentation,
 cinematic lighting,
 high detail,
-delicious food,
+instagram food style,
+professional plating,
+delicious premium dish,
 {prompt}
 """,
-        "steps": 4,
         "width": 1024,
-        "height": 1024
+        "height": 1024,
+        "steps": 4
     }
 
     response = requests.post(
@@ -255,9 +208,11 @@ delicious food,
 
     print(result)
 
-    image_base64 = result["output"]["choices"][0]["image_base64"]
+    image_url = result["data"][0]["url"]
 
-    return image_base64
+    image_response = requests.get(image_url)
+
+    return image_response.content
 
 # =========================================
 # START
@@ -268,13 +223,52 @@ async def start(message: Message):
 
     await message.answer(
         "👨‍🍳 Добро пожаловать в AI ШЕФ БОТ\n\n"
-        "Я создаю ресторанные рецепты, "
-        "озвучиваю их и генерирую фото блюд 📸",
+        "Я создаю ресторанные рецепты и фото блюд 📸",
         reply_markup=main_keyboard
     )
 
 # =========================================
-# MAIN HANDLER
+# FAVORITES
+# =========================================
+
+@dp.message(F.text == "💾 Избранное")
+async def favorites(message: Message):
+
+    recipes = saved_recipes.get(message.chat.id)
+
+    if not recipes:
+
+        await message.answer(
+            "📭 У вас пока нет сохранённых рецептов"
+        )
+
+        return
+
+    text = "💾 Ваши сохранённые рецепты:\n\n"
+
+    for i, recipe in enumerate(recipes, start=1):
+
+        title = recipe.split("\n")[0]
+
+        text += f"{i}. {title}\n"
+
+    await message.answer(text)
+
+# =========================================
+# FRIDGE MODE
+# =========================================
+
+@dp.message(F.text == "🥬 Холодильник")
+async def fridge_mode(message: Message):
+
+    await message.answer(
+        "🥬 Напишите ингредиенты которые у вас есть.\n\n"
+        "Например:\n"
+        "курица, сливки, паста, шампиньоны"
+    )
+
+# =========================================
+# MAIN CHEF
 # =========================================
 
 @dp.message()
@@ -300,7 +294,7 @@ async def chef(message: Message):
                     "content": user_text
                 }
             ],
-            temperature=0.7
+            temperature=0.8
         )
 
         recipe = completion.choices[0].message.content
@@ -309,21 +303,9 @@ async def chef(message: Message):
 
         await loading.delete()
 
-        # ТЕКСТ
-
         await message.answer(
             recipe,
             reply_markup=recipe_inline()
-        )
-
-        # ГОЛОС
-
-        await generate_voice(recipe)
-
-        voice_file = FSInputFile("voice.ogg")
-
-        await message.answer_voice(
-            voice=voice_file
         )
 
     except Exception as e:
@@ -338,7 +320,7 @@ async def chef(message: Message):
         )
 
 # =========================================
-# PHOTO BUTTON
+# GENERATE PHOTO
 # =========================================
 
 @dp.callback_query(F.data == "generate_photo")
@@ -362,11 +344,7 @@ async def generate_photo(callback: CallbackQuery):
 
     try:
 
-        image_base64 = generate_food_image(recipe)
-
-        image_bytes = base64.b64decode(
-            image_base64
-        )
+        image_bytes = generate_food_image(recipe)
 
         photo = BufferedInputFile(
             image_bytes,
@@ -392,15 +370,32 @@ async def generate_photo(callback: CallbackQuery):
         )
 
 # =========================================
-# SAVE BUTTON
+# SAVE RECIPE
 # =========================================
 
 @dp.callback_query(F.data == "save_recipe")
 async def save_recipe(callback: CallbackQuery):
 
+    recipe = last_recipes.get(
+        callback.message.chat.id
+    )
+
+    if not recipe:
+
+        await callback.message.answer(
+            "❌ Нет рецепта для сохранения"
+        )
+
+        return
+
+    if callback.message.chat.id not in saved_recipes:
+
+        saved_recipes[callback.message.chat.id] = []
+
+    saved_recipes[callback.message.chat.id].append(recipe)
+
     await callback.message.answer(
-        "💾 Рецепт сохранён в избранное\n\n"
-        "Система памяти появится в следующем апгрейде 🔥"
+        "💾 Рецепт сохранён в избранное"
     )
 
 # =========================================
@@ -418,4 +413,6 @@ async def main():
 # =========================================
 
 if __name__ == "__main__":
+    import asyncio
+
     asyncio.run(main())

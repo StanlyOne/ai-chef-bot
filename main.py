@@ -1,28 +1,7 @@
 import os
 import logging
-import requests
 import asyncio
 import aiosqlite
-
-DB_PATH = "chef_bot.db"
-
-async def init_db():
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS saved_recipes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                chat_id INTEGER,
-                title TEXT,
-                recipe TEXT
-            )
-        """)
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS user_memory (
-                chat_id INTEGER PRIMARY KEY,
-                preferences TEXT
-            )
-        """)
-        await db.commit()
 
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -35,7 +14,6 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     CallbackQuery,
-    BufferedInputFile
 )
 
 from aiogram.filters import CommandStart
@@ -90,12 +68,34 @@ bot = Bot(
 dp = Dispatcher()
 
 # =========================================
+# DATABASE
+# =========================================
+
+DB_PATH = "chef_bot.db"
+
+async def init_db():
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS saved_recipes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER,
+                title TEXT,
+                recipe TEXT
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS user_memory (
+                chat_id INTEGER PRIMARY KEY,
+                preferences TEXT
+            )
+        """)
+        await db.commit()
+
+# =========================================
 # MEMORY
 # =========================================
 
 last_recipes = {}
-
-saved_recipes = {}
 
 # =========================================
 # SYSTEM PROMPT
@@ -190,15 +190,8 @@ main_keyboard = ReplyKeyboardMarkup(
 # =========================================
 
 def recipe_inline():
-
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="📸 Сгенерировать фото",
-                    callback_data="generate_photo"
-                )
-            ],
             [
                 InlineKeyboardButton(
                     text="💾 Сохранить рецепт",
@@ -208,8 +201,18 @@ def recipe_inline():
         ]
     )
 
+# =========================================
+# START
+# =========================================
 
-
+@dp.message(CommandStart())
+async def start(message: Message):
+    await message.answer(
+        "👨‍🍳 Добро пожаловать в AI ШЕФ БОТ\n\n"
+        "Я создаю ресторанные рецепты 🍽️\n\n"
+        "Напишите название блюда или выберите категорию:",
+        reply_markup=main_keyboard
+    )
 
 # =========================================
 # FAVORITES
@@ -217,7 +220,6 @@ def recipe_inline():
 
 @dp.message(F.text == "💾 Избранное")
 async def favorites(message: Message):
-
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             "SELECT id, title FROM saved_recipes WHERE chat_id = ?",
@@ -242,12 +244,32 @@ async def favorites(message: Message):
 
 @dp.message(F.text == "🥬 Холодильник")
 async def fridge_mode(message: Message):
-
     await message.answer(
         "🥬 Напишите ингредиенты которые у вас есть.\n\n"
         "Например:\n"
         "курица, сливки, паста, шампиньоны"
     )
+
+# =========================================
+# OPEN RECIPE BY NUMBER
+# =========================================
+
+@dp.message(F.text.regexp(r"^\d+$"))
+async def open_recipe(message: Message):
+    recipe_id = int(message.text)
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT recipe FROM saved_recipes WHERE id = ? AND chat_id = ?",
+            (recipe_id, message.chat.id)
+        )
+        row = await cursor.fetchone()
+
+    if not row:
+        await message.answer("❌ Рецепт не найден")
+        return
+
+    await message.answer(row[0])
 
 # =========================================
 # MAIN CHEF
@@ -266,7 +288,6 @@ async def chef(message: Message):
     )
 
     try:
-
         completion = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
@@ -294,7 +315,6 @@ async def chef(message: Message):
         )
 
     except Exception as e:
-
         try:
             await loading.delete()
         except:
@@ -303,8 +323,6 @@ async def chef(message: Message):
         await message.answer(
             f"❌ Ошибка:\n{e}"
         )
-
-
 
 # =========================================
 # SAVE RECIPE
@@ -330,27 +348,10 @@ async def save_recipe(callback: CallbackQuery):
         await db.commit()
 
     await callback.message.answer("💾 Рецепт сохранён в избранное")
+
 # =========================================
 # MAIN
 # =========================================
-@dp.message(F.text.regexp(r"^\d+$"))
-async def open_recipe(message: Message):
-
-    recipe_id = int(message.text)
-
-    async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute(
-            "SELECT recipe FROM saved_recipes WHERE id = ? AND chat_id = ?",
-            (recipe_id, message.chat.id)
-        )
-        row = await cursor.fetchone()
-
-    if not row:
-        await message.answer("❌ Рецепт не найден")
-        return
-
-    await message.answer(row[0])
-
 
 async def main():
     await init_db()

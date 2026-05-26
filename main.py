@@ -187,36 +187,8 @@ def recipe_inline():
         ]
     )
 
-# =========================================
-# IMAGE GENERATION
-# =========================================
 
-def generate_food_image(dish_name):
-    final_prompt = (
-        f"{dish_name}, "
-        "ultra realistic food photography, "
-        "professional plating on a restaurant plate, "
-        "cinematic lighting, soft bokeh background, "
-        "top-down or 45 degree angle, "
-        "gourmet dish, high resolution"
-    )
-    encoded = requests.utils.quote(final_prompt)
-    image_url = f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&nologo=true"
-    response = requests.get(image_url, timeout=30)
-    return response.content
 
-# =========================================
-# START
-# =========================================
-
-@dp.message(CommandStart())
-async def start(message: Message):
-
-    await message.answer(
-        "👨‍🍳 Добро пожаловать в AI ШЕФ БОТ\n\n"
-        "Я создаю ресторанные рецепты и фото блюд 📸",
-        reply_markup=main_keyboard
-    )
 
 # =========================================
 # FAVORITES
@@ -274,7 +246,7 @@ async def chef(message: Message):
     try:
 
         completion = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model="llama-4-scout-17b-16e-instruct",
             messages=[
                 {
                     "role": "system",
@@ -310,58 +282,7 @@ async def chef(message: Message):
             f"❌ Ошибка:\n{e}"
         )
 
-# =========================================
-# GENERATE PHOTO
-# =========================================
 
-@dp.callback_query(F.data == "generate_photo")
-async def generate_photo(callback: CallbackQuery):
-
-    recipe = last_recipes.get(
-        callback.message.chat.id
-    )
-
-    if not recipe:
-
-        await callback.message.answer(
-            "❌ Сначала создайте рецепт"
-        )
-
-        return
-
-    wait_msg = await callback.message.answer(
-        "📸 Генерирую фото блюда..."
-    )
-
-    try:
-
-        lines = [l.strip() for l in recipe.split("\n") if l.strip()]
-        dish_name = lines[0]
-
-        image_bytes = generate_food_image(dish_name)
-
-        photo = BufferedInputFile(
-            image_bytes,
-            filename="dish.png"
-        )
-
-        await callback.message.answer_photo(
-            photo=photo,
-            caption=f"📸 {dish_name}"
-        )
-
-        await wait_msg.delete()
-
-    except Exception as e:
-
-        try:
-            await wait_msg.delete()
-        except:
-            pass
-
-        await callback.message.answer(
-            f"❌ Ошибка генерации фото:\n{e}"
-        )
 
 # =========================================
 # SAVE RECIPE

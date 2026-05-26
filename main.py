@@ -2,6 +2,27 @@ import os
 import logging
 import requests
 import asyncio
+import aiosqlite
+
+DB_PATH = "chef_bot.db"
+
+async def init_db():
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS saved_recipes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER,
+                title TEXT,
+                recipe TEXT
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS user_memory (
+                chat_id INTEGER PRIMARY KEY,
+                preferences TEXT
+            )
+        """)
+        await db.commit()
 
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -197,24 +218,22 @@ def recipe_inline():
 @dp.message(F.text == "💾 Избранное")
 async def favorites(message: Message):
 
-    recipes = saved_recipes.get(message.chat.id)
-
-    if not recipes:
-
-        await message.answer(
-            "📭 У вас пока нет сохранённых рецептов"
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT id, title FROM saved_recipes WHERE chat_id = ?",
+            (message.chat.id,)
         )
+        rows = await cursor.fetchall()
 
+    if not rows:
+        await message.answer("📭 У вас пока нет сохранённых рецептов")
         return
 
     text = "💾 Ваши сохранённые рецепты:\n\n"
+    for row in rows:
+        text += f"{row[0]}. {row[1]}\n"
 
-    for i, recipe in enumerate(recipes, start=1):
-
-        title = recipe.split("\n")[0]
-
-        text += f"{i}. {title}\n"
-
+    text += "\nНапишите номер рецепта чтобы открыть его"
     await message.answer(text)
 
 # =========================================
@@ -291,36 +310,48 @@ async def chef(message: Message):
 @dp.callback_query(F.data == "save_recipe")
 async def save_recipe(callback: CallbackQuery):
 
-    recipe = last_recipes.get(
-        callback.message.chat.id
-    )
+    recipe = last_recipes.get(callback.message.chat.id)
 
     if not recipe:
-
-        await callback.message.answer(
-            "❌ Нет рецепта для сохранения"
-        )
-
+        await callback.message.answer("❌ Нет рецепта для сохранения")
         return
 
-    if callback.message.chat.id not in saved_recipes:
+    lines = [l.strip() for l in recipe.split("\n") if l.strip()]
+    title = lines[0]
 
-        saved_recipes[callback.message.chat.id] = []
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO saved_recipes (chat_id, title, recipe) VALUES (?, ?, ?)",
+            (callback.message.chat.id, title, recipe)
+        )
+        await db.commit()
 
-    saved_recipes[callback.message.chat.id].append(recipe)
-
-    await callback.message.answer(
-        "💾 Рецепт сохранён в избранное"
-    )
-
+    await callback.message.answer("💾 Рецепт сохранён в избранное")
 # =========================================
 # MAIN
 # =========================================
+@dp.message(F.text.regexp(r"^\d+$"))
+async def open_recipe(message: Message):
+
+    recipe_id = int(message.text)
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT recipe FROM saved_recipes WHERE id = ? AND chat_id = ?",
+            (recipe_id, message.chat.id)
+        )
+        row = await cursor.fetchone()
+
+    if not row:
+        await message.answer("❌ Рецепт не найден")
+        return
+
+    await message.answer(row[0])
+
 
 async def main():
-
+    await init_db()
     print("AI ШЕФ БОТ запущен 🚀")
-
     await dp.start_polling(bot)
 
 # =========================================

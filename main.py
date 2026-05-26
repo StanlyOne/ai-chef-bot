@@ -253,8 +253,11 @@ async def fridge_mode(message: Message):
 # MAIN CHEF
 # =========================================
 
-@dp.message(F.text & ~F.text.startswith("/"))
+@dp.message()
 async def chef(message: Message):
+
+    if message.text and message.text.startswith("/"):
+        return
 
     user_text = message.text
 

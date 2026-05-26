@@ -115,7 +115,8 @@ system_prompt = """
 - без сложных техник (су-вид, темперирование, сферификация и т.п.)
 - с доступными ингредиентами из обычного супермаркета
 - время приготовления — реалистичное и не слишком долгое
-
+Все рецепты создавай строго на 1 порцию.
+Количество ингредиентов рассчитывай именно на одного человека.
 Пиши:
 - живым человеческим языком
 - как настоящий шеф
@@ -199,24 +200,18 @@ def recipe_inline():
 # IMAGE GENERATION
 # =========================================
 
-def generate_food_image(prompt):
-
-    final_prompt = f"""
-{prompt},
-ultra realistic food photography,
-michelin restaurant dish,
-beautiful plating,
-cinematic lighting,
-professional food styling,
-high detail,
-gourmet presentation,
-instagram food shot
-"""
-
-    image_url = f"https://image.pollinations.ai/prompt/{final_prompt}"
-
-    response = requests.get(image_url)
-
+def generate_food_image(dish_name):
+    final_prompt = (
+        f"{dish_name}, "
+        "ultra realistic food photography, "
+        "professional plating on a restaurant plate, "
+        "cinematic lighting, soft bokeh background, "
+        "top-down or 45 degree angle, "
+        "gourmet dish, high resolution"
+    )
+    encoded = requests.utils.quote(final_prompt)
+    image_url = f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&nologo=true"
+    response = requests.get(image_url, timeout=30)
     return response.content
 
 # =========================================
@@ -349,7 +344,8 @@ async def generate_photo(callback: CallbackQuery):
 
     try:
 
-        dish_name = recipe.split("\n")[0]
+        lines = [l.strip() for l in recipe.split("\n") if l.strip()]
+        dish_name = lines[0]
 
         image_bytes = generate_food_image(dish_name)
 

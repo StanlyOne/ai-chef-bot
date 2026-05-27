@@ -3,6 +3,7 @@ import logging
 import asyncio
 import aiosqlite
 
+from datetime import date
 from dotenv import load_dotenv
 from openai import OpenAI
 
@@ -89,6 +90,56 @@ async def init_db():
                 preferences TEXT
             )
         """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS subscriptions (
+                chat_id INTEGER PRIMARY KEY,
+                plan TEXT DEFAULT 'free',
+                recipes_today INTEGER DEFAULT 0,
+                last_reset TEXT
+            )
+        """)
+        await db.commit()
+
+# =========================================
+# SUBSCRIPTION HELPERS
+# =========================================
+
+PLAN_LIMITS = {
+    "free": 3,
+    "pro": 10,
+    "premium": 99999
+}
+
+async def get_user_plan(chat_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT plan, recipes_today, last_reset FROM subscriptions WHERE chat_id = ?",
+            (chat_id,)
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return "free", 0
+        plan, count, last_reset = row
+        today = str(date.today())
+        if last_reset != today:
+            await db.execute(
+                "UPDATE subscriptions SET recipes_today = 0, last_reset = ? WHERE chat_id = ?",
+                (today, chat_id)
+            )
+            await db.commit()
+            return plan, 0
+        return plan, count
+
+async def increment_recipe_count(chat_id):
+    today = str(date.today())
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            INSERT INTO subscriptions (chat_id, recipes_today, last_reset)
+            VALUES (?, 1, ?)
+            ON CONFLICT(chat_id) DO UPDATE SET
+                recipes_today = recipes_today + 1,
+                last_reset = ?
+        """, (chat_id, today, today))
         await db.commit()
 
 # =========================================
@@ -163,6 +214,30 @@ system_prompt = """
 - Пиши только на русском, даже если продукт написан на другом языке
 """
 
+kbju_prompt = """
+Ты — диетолог и нутрициолог.
+Ты говоришь только на русском языке.
+
+ТВОЯ ЗАДАЧА:
+Рассчитать точное КБЖУ для блюда или рецепта который прислал пользователь.
+
+СТРОГИЕ ЗАПРЕТЫ:
+- Никакого markdown: никаких **, ##, и т.п.
+- Никаких иностранных слов
+- Не придумывай рецепт — только считай КБЖУ
+
+СТРУКТУРА ОТВЕТА — строго такая:
+
+КБЖУ для: [название блюда]
+
+Калории: ... ккал
+Белки: ... г
+Жиры: ... г
+Углеводы: ... г
+
+Краткий комментарий (1-2 предложения о пользе или особенностях блюда)
+"""
+
 # =========================================
 # KEYBOARD
 # =========================================
@@ -180,6 +255,9 @@ main_keyboard = ReplyKeyboardMarkup(
         [
             KeyboardButton(text="🥬 Холодильник"),
             KeyboardButton(text="💾 Избранное")
+        ],
+        [
+            KeyboardButton(text="👑 Подписка")
         ]
     ],
     resize_keyboard=True
@@ -192,6 +270,12 @@ main_keyboard = ReplyKeyboardMarkup(
 def recipe_inline():
     return InlineKeyboardMarkup(
         inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="📊 Рассчитать КБЖУ",
+                    callback_data="calc_kbju"
+                )
+            ],
             [
                 InlineKeyboardButton(
                     text="💾 Сохранить рецепт",
@@ -213,6 +297,35 @@ async def start(message: Message):
         "Напишите название блюда или выберите категорию:",
         reply_markup=main_keyboard
     )
+
+# =========================================
+# SUBSCRIPTION
+# =========================================
+
+@dp.message(F.text == "👑 Подписка")
+async def subscription(message: Message):
+    plan, count = await get_user_plan(message.chat.id)
+    limits = {"free": 3, "pro": 10, "premium": "∞"}
+    limit = limits.get(plan, 3)
+
+    text = (
+        f"👑 Ваш текущий план: {plan.upper()}\n"
+        f"📊 Рецептов сегодня: {count} из {limit}\n\n"
+        "📦 Доступные планы:\n\n"
+        "🆓 FREE\n"
+        "— 3 рецепта в день\n"
+        "— без КБЖУ\n\n"
+        "⭐ PRO — 299 руб/мес\n"
+        "— 10 рецептов в день\n"
+        "— расчёт КБЖУ\n\n"
+        "👑 PREMIUM — 599 руб/мес\n"
+        "— безлимитные рецепты\n"
+        "— расчёт КБЖУ\n"
+        "— приоритетная генерация\n\n"
+        "🔜 Оплата скоро будет доступна"
+    )
+
+    await message.answer(text)
 
 # =========================================
 # FAVORITES
@@ -272,6 +385,20 @@ async def open_recipe(message: Message):
     await message.answer(row[0])
 
 # =========================================
+# KBJU REQUEST DETECTION
+# =========================================
+
+def is_kbju_request(text: str) -> bool:
+    keywords = [
+        "кбжу", "калории", "калорийность",
+        "рассчитай кбжу", "посчитай кбжу",
+        "сколько калорий", "белки жиры углеводы",
+        "пищевая ценность", "бжу"
+    ]
+    text_lower = text.lower()
+    return any(kw in text_lower for kw in keywords)
+
+# =========================================
 # MAIN CHEF
 # =========================================
 
@@ -282,47 +409,127 @@ async def chef(message: Message):
         return
 
     user_text = message.text
+    plan, count = await get_user_plan(message.chat.id)
 
-    loading = await message.answer(
-        "👨‍🍳 Шеф готовит рецепт..."
-    )
+    # ===== КБЖУ ЗАПРОС =====
+    if is_kbju_request(user_text):
+
+        if plan == "free":
+            await message.answer(
+                "📊 Расчёт КБЖУ доступен только на планах PRO и PREMIUM\n\n"
+                "👑 Узнать подробнее — нажмите Подписка"
+            )
+            return
+
+        recipe = last_recipes.get(message.chat.id)
+
+        loading = await message.answer("📊 Считаю КБЖУ...")
+
+        try:
+            content = user_text
+            if recipe:
+                content = f"{user_text}\n\nРецепт:\n{recipe}"
+
+            completion = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[
+                    {"role": "system", "content": kbju_prompt},
+                    {"role": "user", "content": content}
+                ],
+                temperature=0.3
+            )
+
+            result = completion.choices[0].message.content
+            await loading.delete()
+            await message.answer(result)
+
+        except Exception as e:
+            try:
+                await loading.delete()
+            except:
+                pass
+            await message.answer(f"❌ Ошибка:\n{e}")
+
+        return
+
+    # ===== ЛИМИТ РЕЦЕПТОВ =====
+    limit = PLAN_LIMITS.get(plan, 3)
+    if count >= limit:
+        await message.answer(
+            f"❌ Лимит рецептов на сегодня исчерпан ({limit} шт)\n\n"
+            "👑 Улучшите план в разделе Подписка"
+        )
+        return
+
+    loading = await message.answer("👨‍🍳 Шеф готовит рецепт...")
 
     try:
         completion = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
-                {
-                    "role": "system",
-                    "content": system_prompt
-                },
-                {
-                    "role": "user",
-                    "content": user_text
-                }
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_text}
             ],
             temperature=0.8
         )
 
         recipe = completion.choices[0].message.content
-
         last_recipes[message.chat.id] = recipe
-
+        await increment_recipe_count(message.chat.id)
         await loading.delete()
-
-        await message.answer(
-            recipe,
-            reply_markup=recipe_inline()
-        )
+        await message.answer(recipe, reply_markup=recipe_inline())
 
     except Exception as e:
         try:
             await loading.delete()
         except:
             pass
+        await message.answer(f"❌ Ошибка:\n{e}")
 
-        await message.answer(
-            f"❌ Ошибка:\n{e}"
+# =========================================
+# CALC KBJU BUTTON
+# =========================================
+
+@dp.callback_query(F.data == "calc_kbju")
+async def calc_kbju(callback: CallbackQuery):
+
+    plan, _ = await get_user_plan(callback.message.chat.id)
+
+    if plan == "free":
+        await callback.message.answer(
+            "📊 Расчёт КБЖУ доступен только на планах PRO и PREMIUM\n\n"
+            "👑 Узнать подробнее — нажмите Подписка"
         )
+        return
+
+    recipe = last_recipes.get(callback.message.chat.id)
+
+    if not recipe:
+        await callback.message.answer("❌ Сначала создайте рецепт")
+        return
+
+    loading = await callback.message.answer("📊 Считаю КБЖУ...")
+
+    try:
+        completion = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": kbju_prompt},
+                {"role": "user", "content": f"Рассчитай КБЖУ для этого рецепта:\n\n{recipe}"}
+            ],
+            temperature=0.3
+        )
+
+        result = completion.choices[0].message.content
+        await loading.delete()
+        await callback.message.answer(result)
+
+    except Exception as e:
+        try:
+            await loading.delete()
+        except:
+            pass
+        await callback.message.answer(f"❌ Ошибка:\n{e}")
 
 # =========================================
 # SAVE RECIPE

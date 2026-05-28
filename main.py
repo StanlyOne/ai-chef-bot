@@ -443,14 +443,7 @@ async def chef(message: Message):
 
         return
 
-    # ===== ЛИМИТ РЕЦЕПТОВ =====
-    limit = PLAN_LIMITS.get(plan, 3)
-    if count >= limit:
-        await message.answer(
-            f"❌ Лимит рецептов на сегодня исчерпан ({limit} шт)\n\n"
-            "👑 Улучшите план в разделе Подписка"
-        )
-        return
+  
 
     loading = await message.answer("👨‍🍳 Шеф готовит рецепт...")
 
@@ -466,7 +459,6 @@ async def chef(message: Message):
 
         recipe = completion.choices[0].message.content
         last_recipes[message.chat.id] = recipe
-        await increment_recipe_count(message.chat.id)
         await loading.delete()
         await message.answer(recipe, reply_markup=recipe_inline())
 

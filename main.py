@@ -313,8 +313,7 @@ async def subscription(message: Message):
         f"📊 Рецептов сегодня: {count} из {limit}\n\n"
         "📦 Доступные планы:\n\n"
         "🆓 FREE\n"
-        "— 3 рецепта в день\n"
-        "— без КБЖУ\n\n"
+        "— 3 рецепта в день\n\n"
         "⭐ PRO — 299 руб/мес\n"
         "— 10 рецептов в день\n"
         "— расчёт КБЖУ\n\n"
@@ -411,18 +410,10 @@ async def chef(message: Message):
     user_text = message.text
     plan, count = await get_user_plan(message.chat.id)
 
-    # ===== КБЖУ ЗАПРОС =====
+    # ===== КБЖУ ЗАПРОС — доступно всем =====
     if is_kbju_request(user_text):
 
-        if plan == "free":
-            await message.answer(
-                "📊 Расчёт КБЖУ доступен только на планах PRO и PREMIUM\n\n"
-                "👑 Узнать подробнее — нажмите Подписка"
-            )
-            return
-
         recipe = last_recipes.get(message.chat.id)
-
         loading = await message.answer("📊 Считаю КБЖУ...")
 
         try:
@@ -492,15 +483,6 @@ async def chef(message: Message):
 
 @dp.callback_query(F.data == "calc_kbju")
 async def calc_kbju(callback: CallbackQuery):
-
-    plan, _ = await get_user_plan(callback.message.chat.id)
-
-    if plan == "free":
-        await callback.message.answer(
-            "📊 Расчёт КБЖУ доступен только на планах PRO и PREMIUM\n\n"
-            "👑 Узнать подробнее — нажмите Подписка"
-        )
-        return
 
     recipe = last_recipes.get(callback.message.chat.id)
 

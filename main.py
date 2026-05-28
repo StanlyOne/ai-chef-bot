@@ -105,8 +105,8 @@ async def init_db():
 # =========================================
 
 PLAN_LIMITS = {
-    "free": 3,
-    "pro": 10,
+    "free": 99999,
+    "pro": 99999,
     "premium": 99999
 }
 
@@ -130,18 +130,6 @@ async def get_user_plan(chat_id):
             return plan, 0
         return plan, count
 
-async def increment_recipe_count(chat_id):
-    today = str(date.today())
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("""
-            INSERT INTO subscriptions (chat_id, recipes_today, last_reset)
-            VALUES (?, 1, ?)
-            ON CONFLICT(chat_id) DO UPDATE SET
-                recipes_today = recipes_today + 1,
-                last_reset = ?
-        """, (chat_id, today, today))
-        await db.commit()
-
 # =========================================
 # MEMORY
 # =========================================
@@ -164,6 +152,14 @@ system_prompt = """
 - Никаких иностранных слов: oil, meanwhile, mix, saute и т.п.
 - Никаких выдуманных или экзотических блюд
 - Никаких сложных техник: су-вид, темперирование, сферификация
+
+УТОЧНЕНИЕ ИНГРЕДИЕНТОВ — всегда указывай конкретный вид продукта:
+- Не "сыр" → а "сыр Халуми" или "сыр Сулугуни"
+- Не "мясо" → а "куриная грудка" или "свиная шея"
+- Не "рыба" → а "филе лосося" или "треска"
+- Не "зелень" → а "петрушка" или "укроп"
+- Не "масло" → а "сливочное масло" или "оливковое масло"
+- Не "сыр" для жарки → обязательно укажи сыр который плавится и держит форму
 
 ЕДИНИЦЫ ИЗМЕРЕНИЯ — ТОЛЬКО граммы, килограммы, миллилитры, литры:
 - Правильно: 150 г огурца, 100 г лука, 3 г соли, 200 мл молока
@@ -305,12 +301,12 @@ async def start(message: Message):
 @dp.message(F.text == "👑 Подписка")
 async def subscription(message: Message):
     plan, count = await get_user_plan(message.chat.id)
-    limits = {"free": 3, "pro": 10, "premium": "∞"}
-    limit = limits.get(plan, 3)
+    limits = {"free": "∞", "pro": "∞", "premium": "∞"}
+    limit = limits.get(plan, "∞")
 
     text = (
         f"👑 Ваш текущий план: {plan.upper()}\n"
-        f"📊 Рецептов сегодня: {count} из {limit}\n\n"
+        f"📊 Рецептов сегодня: {count}\n\n"
         "📦 Доступные планы:\n\n"
         "🆓 FREE\n"
         "— 3 рецепта в день\n\n"
@@ -410,7 +406,7 @@ async def chef(message: Message):
     user_text = message.text
     plan, count = await get_user_plan(message.chat.id)
 
-    # ===== КБЖУ ЗАПРОС — доступно всем =====
+    # ===== КБЖУ ЗАПРОС =====
     if is_kbju_request(user_text):
 
         recipe = last_recipes.get(message.chat.id)
@@ -442,8 +438,6 @@ async def chef(message: Message):
             await message.answer(f"❌ Ошибка:\n{e}")
 
         return
-
-  
 
     loading = await message.answer("👨‍🍳 Шеф готовит рецепт...")
 

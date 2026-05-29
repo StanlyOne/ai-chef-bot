@@ -439,7 +439,7 @@ async def submenu_callback(callback: CallbackQuery):
     try:
         response = await asyncio.to_thread(
             client.models.generate_content,
-            model="gemini-2.0-flash",
+            model="gemini-2.5-flash",
             contents=system_prompt_recipe + "\n\n" + user_text
         )
 
@@ -604,7 +604,7 @@ async def chef(message: Message):
     try:
         response = await asyncio.to_thread(
             client.models.generate_content,
-            model="gemini-2.0-flash",
+            model="gemini-2.5-flash",
             contents=system_prompt_recipe + "\n\n" + user_text
         )
 
@@ -638,7 +638,7 @@ async def calc_kbju(callback: CallbackQuery):
     try:
         response = await asyncio.to_thread(
             client.models.generate_content,
-            model="gemini-2.0-flash",
+            model="gemini-2.5-flash",
             contents=system_prompt_kbju + "\n\nРассчитай КБЖУ для этого рецепта:\n\n" + recipe
         )
 

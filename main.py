@@ -139,10 +139,14 @@ system_prompt_recipe = """
 ...
 
 РЕЖИМЫ — когда пользователь пишет ключевое слово:
-- "ПП" → лёгкое и полезное блюдо, минимум жиров и углеводов
-- "десерт" → красивый и несложный десерт
-- "мясо" → сытное мясное блюдо, НЕ курица
-- "быстро" → готовка не дольше 20 минут, каждый раз РАЗНОЕ блюдо
+- "лёгкое и полезное" → лёгкое блюдо минимум калорий и жиров
+- "здоровое питание" → блюдо богатое белком, витаминами, без сахара и жирного
+- "до 20 минут" → готовка строго не дольше 20 минут
+- "быстро и вкусно" → простое блюдо не дольше 20 минут
+- "побаловать себя" → красивый десерт который не стыдно подать гостям
+- "что-то сладкое" → простой домашний десерт
+- "сытное мясное" → сытное мясное блюдо с гарниром
+- "мясо на огне" → блюдо на сковороде или гриле с румяной корочкой
 - список продуктов → придумай реальное блюдо именно из этих продуктов
 
 КОГДА ПОЛЬЗОВАТЕЛЬ ПИШЕТ СПИСОК ПРОДУКТОВ:
@@ -252,7 +256,7 @@ async def get_user_plan(chat_id):
 last_recipes = {}
 
 # =========================================
-# KEYBOARD
+# MAIN KEYBOARD
 # =========================================
 
 main_keyboard = ReplyKeyboardMarkup(
@@ -277,7 +281,75 @@ main_keyboard = ReplyKeyboardMarkup(
 )
 
 # =========================================
-# INLINE BUTTONS
+# SUBMENU INLINE KEYBOARDS
+# =========================================
+
+def submenu_pp():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🌿 Лёгкое и полезное",
+                    callback_data="recipe_legkoe"
+                ),
+                InlineKeyboardButton(
+                    text="💪 Здоровое питание",
+                    callback_data="recipe_zdorovoe"
+                )
+            ]
+        ]
+    )
+
+def submenu_fast():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="⚡ До 20 минут",
+                    callback_data="recipe_20min"
+                ),
+                InlineKeyboardButton(
+                    text="🔥 Быстро и вкусно",
+                    callback_data="recipe_bystro"
+                )
+            ]
+        ]
+    )
+
+def submenu_dessert():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🧁 Побаловать себя",
+                    callback_data="recipe_pobaloat"
+                ),
+                InlineKeyboardButton(
+                    text="🍫 Что-то сладкое",
+                    callback_data="recipe_sladkoe"
+                )
+            ]
+        ]
+    )
+
+def submenu_meat():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🥩 Сытное мясное",
+                    callback_data="recipe_sytnoe"
+                ),
+                InlineKeyboardButton(
+                    text="🔥 Мясо на огне",
+                    callback_data="recipe_ogon"
+                )
+            ]
+        ]
+    )
+
+# =========================================
+# RECIPE INLINE BUTTONS
 # =========================================
 
 def recipe_inline():
@@ -312,6 +384,78 @@ async def start(message: Message):
     )
 
 # =========================================
+# SUBMENUS
+# =========================================
+
+@dp.message(F.text == "🥗 ПП рецепт")
+async def pp_submenu(message: Message):
+    await message.answer(
+        "🥗 Выбери тип блюда:",
+        reply_markup=submenu_pp()
+    )
+
+@dp.message(F.text == "🔥 Быстрый рецепт")
+async def fast_submenu(message: Message):
+    await message.answer(
+        "🔥 Выбери тип блюда:",
+        reply_markup=submenu_fast()
+    )
+
+@dp.message(F.text == "🍰 Десерт")
+async def dessert_submenu(message: Message):
+    await message.answer(
+        "🍰 Выбери тип десерта:",
+        reply_markup=submenu_dessert()
+    )
+
+@dp.message(F.text == "🥩 Мясо")
+async def meat_submenu(message: Message):
+    await message.answer(
+        "🥩 Выбери тип блюда:",
+        reply_markup=submenu_meat()
+    )
+
+# =========================================
+# SUBMENU CALLBACKS
+# =========================================
+
+SUBMENU_PROMPTS = {
+    "recipe_legkoe": "лёгкое и полезное",
+    "recipe_zdorovoe": "здоровое питание",
+    "recipe_20min": "до 20 минут",
+    "recipe_bystro": "быстро и вкусно",
+    "recipe_pobaloat": "побаловать себя",
+    "recipe_sladkoe": "что-то сладкое",
+    "recipe_sytnoe": "сытное мясное",
+    "recipe_ogon": "мясо на огне",
+}
+
+@dp.callback_query(F.data.in_(SUBMENU_PROMPTS.keys()))
+async def submenu_callback(callback: CallbackQuery):
+    user_text = SUBMENU_PROMPTS[callback.data]
+
+    loading = await callback.message.answer("👨‍🍳 Шеф готовит рецепт...")
+
+    try:
+        response = await asyncio.to_thread(
+            client.models.generate_content,
+            model="gemini-2.0-flash",
+            contents=system_prompt_recipe + "\n\n" + user_text
+        )
+
+        recipe = response.text
+        last_recipes[callback.message.chat.id] = recipe
+        await loading.delete()
+        await callback.message.answer(recipe, reply_markup=recipe_inline())
+
+    except Exception as e:
+        try:
+            await loading.delete()
+        except:
+            pass
+        await callback.message.answer(f"❌ Ошибка:\n{e}")
+
+# =========================================
 # SUBSCRIPTION
 # =========================================
 
@@ -320,18 +464,25 @@ async def subscription(message: Message):
     plan, count = await get_user_plan(message.chat.id)
 
     text = (
+        f"🍽️ Хватит готовить одно и то же.\n"
+        f"Твой личный шеф-повар уже в телефоне.\n\n"
         f"👑 Ваш текущий план: {plan.upper()}\n\n"
-        "📦 Доступные планы:\n\n"
-        "🆓 FREE\n"
+        "🆓 FREE — бесплатно\n"
+        "Попробуй и почувствуй разницу.\n"
         "— 3 рецепта в день\n\n"
-        "⭐ PRO — 299 руб/мес\n"
+        "⭐ PRO — 299 ₽/мес\n"
+        "Меньше чем чашка кофе — а пользы на месяц вперёд.\n"
         "— 10 рецептов в день\n"
-        "— расчёт КБЖУ\n\n"
-        "👑 PREMIUM — 599 руб/мес\n"
-        "— безлимитные рецепты\n"
-        "— расчёт КБЖУ\n"
-        "— приоритетная генерация\n\n"
-        "🔜 Оплата скоро будет доступна"
+        "— точный расчёт КБЖУ\n"
+        "— идеально для правильного питания\n\n"
+        "👑 PREMIUM — 599 ₽/мес\n"
+        "Всё и сразу. Без ограничений. Без компромиссов.\n"
+        "— безлимитные рецепты 24/7\n"
+        "— КБЖУ для каждого блюда\n"
+        "— максимальная скорость ответа\n"
+        "— первым получаешь новые функции\n\n"
+        "💳 Оплата скоро будет доступна\n"
+        "Готовь как профи. Каждый день. 🔥"
     )
 
     await message.answer(text)
@@ -432,7 +583,7 @@ async def chef(message: Message):
 
             response = await asyncio.to_thread(
                 client.models.generate_content,
-                model="gemini-2.5-flash",
+                model="gemini-2.0-flash",
                 contents=system_prompt_kbju + "\n\n" + content
             )
 
@@ -453,7 +604,7 @@ async def chef(message: Message):
     try:
         response = await asyncio.to_thread(
             client.models.generate_content,
-            model="gemini-2.5-flash",
+            model="gemini-2.0-flash",
             contents=system_prompt_recipe + "\n\n" + user_text
         )
 
@@ -487,7 +638,7 @@ async def calc_kbju(callback: CallbackQuery):
     try:
         response = await asyncio.to_thread(
             client.models.generate_content,
-            model="gemini-2.5-flash",
+            model="gemini-2.0-flash",
             contents=system_prompt_kbju + "\n\nРассчитай КБЖУ для этого рецепта:\n\n" + recipe
         )
 

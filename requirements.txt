@@ -40,4 +40,4 @@ typing_extensions==4.15.0
 urllib3==2.7.0
 yarl==1.23.0
 aiosqlite
-google-generativeai
+google-genai

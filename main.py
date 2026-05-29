@@ -5,7 +5,7 @@ import aiosqlite
 
 from datetime import date
 from dotenv import load_dotenv
-import google.generativeai as genai
+from google import genai
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import (

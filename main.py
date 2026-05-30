@@ -2,10 +2,13 @@ import os
 import logging
 import asyncio
 import aiosqlite
+import io
 
 from datetime import date
 from dotenv import load_dotenv
 from google import genai
+from elevenlabs.client import ElevenLabs
+from elevenlabs import VoiceSettings
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import (
@@ -15,6 +18,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     CallbackQuery,
+    BufferedInputFile,
 )
 
 from aiogram.filters import CommandStart
@@ -29,6 +33,7 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
 
 # =========================================
 # LOGGING
@@ -46,11 +51,15 @@ if not BOT_TOKEN:
 if not GEMINI_API_KEY:
     raise ValueError("❌ GEMINI_API_KEY не найден")
 
+if not ELEVENLABS_API_KEY:
+    raise ValueError("❌ ELEVENLABS_API_KEY не найден")
+
 # =========================================
-# GEMINI CLIENT
+# CLIENTS
 # =========================================
 
-client = genai.Client(api_key=GEMINI_API_KEY)
+gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+eleven_client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
 
 # =========================================
 # PROMPTS
@@ -256,6 +265,27 @@ async def get_user_plan(chat_id):
 last_recipes = {}
 
 # =========================================
+# VOICE GENERATION
+# =========================================
+
+def generate_voice(text: str) -> bytes:
+    audio_generator = eleven_client.text_to_speech.convert(
+        voice_id="pNInz6obpgDQGcFmaJgB",
+        text=text,
+        model_id="eleven_multilingual_v2",
+        voice_settings=VoiceSettings(
+            stability=0.5,
+            similarity_boost=0.75,
+            style=0.3,
+            use_speaker_boost=True
+        )
+    )
+    audio_bytes = io.BytesIO()
+    for chunk in audio_generator:
+        audio_bytes.write(chunk)
+    return audio_bytes.getvalue()
+
+# =========================================
 # MAIN KEYBOARD
 # =========================================
 
@@ -357,6 +387,12 @@ def recipe_inline():
         inline_keyboard=[
             [
                 InlineKeyboardButton(
+                    text="🔊 Озвучить рецепт",
+                    callback_data="voice_recipe"
+                )
+            ],
+            [
+                InlineKeyboardButton(
                     text="📊 Рассчитать КБЖУ",
                     callback_data="calc_kbju"
                 )
@@ -377,7 +413,7 @@ def recipe_inline():
 @dp.message(CommandStart())
 async def start(message: Message):
     await message.answer(
-        "👨‍🍳 Добро пожаловать в AI ШЕФ БОТ\n\n"
+        "👨‍🍳 Добро пожаловать в TwoChefs Bot\n\n"
         "Я создаю ресторанные рецепты 🍽️\n\n"
         "Напишите название блюда или выберите категорию:",
         reply_markup=main_keyboard
@@ -433,12 +469,11 @@ SUBMENU_PROMPTS = {
 @dp.callback_query(F.data.in_(SUBMENU_PROMPTS.keys()))
 async def submenu_callback(callback: CallbackQuery):
     user_text = SUBMENU_PROMPTS[callback.data]
-
     loading = await callback.message.answer("👨‍🍳 Шеф готовит рецепт...")
 
     try:
         response = await asyncio.to_thread(
-            client.models.generate_content,
+            gemini_client.models.generate_content,
             model="gemini-2.5-flash",
             contents=system_prompt_recipe + "\n\n" + user_text
         )
@@ -470,12 +505,12 @@ async def subscription(message: Message):
         "🆓 FREE — бесплатно\n"
         "Попробуй и почувствуй разницу.\n"
         "— 3 рецепта в день\n\n"
-        "⭐ PRO — 399 ₽/мес\n"
+        "⭐ PRO — 299 ₽/мес\n"
         "Меньше чем чашка кофе — а пользы на месяц вперёд.\n"
         "— 10 рецептов в день\n"
         "— точный расчёт КБЖУ\n"
         "— идеально для правильного питания\n\n"
-        "👑 PREMIUM — 699 ₽/мес\n"
+        "👑 PREMIUM — 599 ₽/мес\n"
         "Всё и сразу. Без ограничений. Без компромиссов.\n"
         "— безлимитные рецепты 24/7\n"
         "— КБЖУ для каждого блюда\n"
@@ -582,8 +617,8 @@ async def chef(message: Message):
                 content = f"{user_text}\n\nРецепт:\n{recipe}"
 
             response = await asyncio.to_thread(
-                client.models.generate_content,
-                model="gemini-2.0-flash",
+                gemini_client.models.generate_content,
+                model="gemini-2.5-flash",
                 contents=system_prompt_kbju + "\n\n" + content
             )
 
@@ -603,7 +638,7 @@ async def chef(message: Message):
 
     try:
         response = await asyncio.to_thread(
-            client.models.generate_content,
+            gemini_client.models.generate_content,
             model="gemini-2.5-flash",
             contents=system_prompt_recipe + "\n\n" + user_text
         )
@@ -619,6 +654,39 @@ async def chef(message: Message):
         except:
             pass
         await message.answer(f"❌ Ошибка:\n{e}")
+
+# =========================================
+# VOICE RECIPE
+# =========================================
+
+@dp.callback_query(F.data == "voice_recipe")
+async def voice_recipe(callback: CallbackQuery):
+
+    recipe = last_recipes.get(callback.message.chat.id)
+
+    if not recipe:
+        await callback.message.answer("❌ Сначала создайте рецепт")
+        return
+
+    loading = await callback.message.answer("🔊 Озвучиваю рецепт...")
+
+    try:
+        audio_bytes = await asyncio.to_thread(generate_voice, recipe)
+
+        audio_file = BufferedInputFile(
+            audio_bytes,
+            filename="recipe.mp3"
+        )
+
+        await callback.message.answer_voice(voice=audio_file)
+        await loading.delete()
+
+    except Exception as e:
+        try:
+            await loading.delete()
+        except:
+            pass
+        await callback.message.answer(f"❌ Ошибка озвучки:\n{e}")
 
 # =========================================
 # CALC KBJU BUTTON
@@ -637,7 +705,7 @@ async def calc_kbju(callback: CallbackQuery):
 
     try:
         response = await asyncio.to_thread(
-            client.models.generate_content,
+            gemini_client.models.generate_content,
             model="gemini-2.5-flash",
             contents=system_prompt_kbju + "\n\nРассчитай КБЖУ для этого рецепта:\n\n" + recipe
         )

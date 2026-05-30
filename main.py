@@ -280,7 +280,8 @@ def generate_voice_yandex(text: str) -> bytes:
         "emotion": "good",
         "speed": "1.0",
         "format": "mp3",
-        "sampleRateHertz": "48000"
+        "sampleRateHertz": "48000",
+        "folderId": os.getenv("YANDEX_FOLDER_ID")
     }
 
     response = requests.post(url, headers=headers, data=data)

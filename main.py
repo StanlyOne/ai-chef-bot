@@ -470,12 +470,12 @@ async def subscription(message: Message):
         "🆓 FREE — бесплатно\n"
         "Попробуй и почувствуй разницу.\n"
         "— 3 рецепта в день\n\n"
-        "⭐ PRO — 299 ₽/мес\n"
+        "⭐ PRO — 399 ₽/мес\n"
         "Меньше чем чашка кофе — а пользы на месяц вперёд.\n"
         "— 10 рецептов в день\n"
         "— точный расчёт КБЖУ\n"
         "— идеально для правильного питания\n\n"
-        "👑 PREMIUM — 599 ₽/мес\n"
+        "👑 PREMIUM — 699 ₽/мес\n"
         "Всё и сразу. Без ограничений. Без компромиссов.\n"
         "— безлимитные рецепты 24/7\n"
         "— КБЖУ для каждого блюда\n"
@@ -503,13 +503,11 @@ async def favorites(message: Message):
     if not rows:
         await message.answer("📭 У вас пока нет сохранённых рецептов")
         return
+text = "💾 Ваши сохранённые рецепты:\n\n"
+for i, row in enumerate(rows, start=1):
+    text += f"{i}. {row[1]}\n"
 
-    text = "💾 Ваши сохранённые рецепты:\n\n"
-    for row in rows:
-        text += f"{row[0]}. {row[1]}\n"
-
-    text += "\nНапишите номер рецепта чтобы открыть его"
-    await message.answer(text)
+text += "\nНапишите номер рецепта чтобы открыть его"
 
 # =========================================
 # FRIDGE MODE
@@ -529,12 +527,12 @@ async def fridge_mode(message: Message):
 
 @dp.message(F.text.regexp(r"^\d+$"))
 async def open_recipe(message: Message):
-    recipe_id = int(message.text)
+    index = int(message.text) - 1
 
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
-            "SELECT recipe FROM saved_recipes WHERE id = ? AND chat_id = ?",
-            (recipe_id, message.chat.id)
+            "SELECT recipe FROM saved_recipes WHERE chat_id = ? ORDER BY id LIMIT 1 OFFSET ?",
+            (message.chat.id, index)
         )
         row = await cursor.fetchone()
 

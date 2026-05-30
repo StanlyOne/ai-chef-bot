@@ -503,11 +503,13 @@ async def favorites(message: Message):
     if not rows:
         await message.answer("📭 У вас пока нет сохранённых рецептов")
         return
-text = "💾 Ваши сохранённые рецепты:\n\n"
-for i, row in enumerate(rows, start=1):
-    text += f"{i}. {row[1]}\n"
 
-text += "\nНапишите номер рецепта чтобы открыть его"
+    text = "💾 Ваши сохранённые рецепты:\n\n"
+    for i, row in enumerate(rows, start=1):
+        text += f"{i}. {row[1]}\n"
+
+    text += "\nНапишите номер рецепта чтобы открыть его"
+    await message.answer(text)
 
 # =========================================
 # FRIDGE MODE

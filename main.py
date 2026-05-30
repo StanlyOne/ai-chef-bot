@@ -3,12 +3,11 @@ import logging
 import asyncio
 import aiosqlite
 import io
+import requests
 
 from datetime import date
 from dotenv import load_dotenv
 from google import genai
-from elevenlabs.client import ElevenLabs
-from elevenlabs import VoiceSettings
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import (
@@ -33,7 +32,7 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
+YANDEX_API_KEY = os.getenv("YANDEX_API_KEY")
 
 # =========================================
 # LOGGING
@@ -51,15 +50,14 @@ if not BOT_TOKEN:
 if not GEMINI_API_KEY:
     raise ValueError("❌ GEMINI_API_KEY не найден")
 
-if not ELEVENLABS_API_KEY:
-    raise ValueError("❌ ELEVENLABS_API_KEY не найден")
+if not YANDEX_API_KEY:
+    raise ValueError("❌ YANDEX_API_KEY не найден")
 
 # =========================================
-# CLIENTS
+# GEMINI CLIENT
 # =========================================
 
 gemini_client = genai.Client(api_key=GEMINI_API_KEY)
-eleven_client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
 
 # =========================================
 # PROMPTS
@@ -265,25 +263,32 @@ async def get_user_plan(chat_id):
 last_recipes = {}
 
 # =========================================
-# VOICE GENERATION
+# YANDEX TTS
 # =========================================
 
-def generate_voice(text: str) -> bytes:
-    audio_generator = eleven_client.text_to_speech.convert(
-        voice_id="pNInz6obpgDQGcFmaJgB",
-        text=text,
-        model_id="eleven_multilingual_v2",
-        voice_settings=VoiceSettings(
-            stability=0.5,
-            similarity_boost=0.75,
-            style=0.3,
-            use_speaker_boost=True
-        )
-    )
-    audio_bytes = io.BytesIO()
-    for chunk in audio_generator:
-        audio_bytes.write(chunk)
-    return audio_bytes.getvalue()
+def generate_voice_yandex(text: str) -> bytes:
+    url = "https://tts.api.cloud.yandex.net/speech/v1/tts:synthesize"
+
+    headers = {
+        "Authorization": f"Api-Key {YANDEX_API_KEY}"
+    }
+
+    data = {
+        "text": text,
+        "lang": "ru-RU",
+        "voice": "alena",
+        "emotion": "good",
+        "speed": "1.0",
+        "format": "mp3",
+        "sampleRateHertz": "48000"
+    }
+
+    response = requests.post(url, headers=headers, data=data)
+
+    if response.status_code != 200:
+        raise Exception(f"Yandex TTS ошибка: {response.status_code} {response.text}")
+
+    return response.content
 
 # =========================================
 # MAIN KEYBOARD
@@ -605,7 +610,6 @@ async def chef(message: Message):
 
     user_text = message.text
 
-    # ===== КБЖУ ЗАПРОС =====
     if is_kbju_request(user_text):
 
         recipe = last_recipes.get(message.chat.id)
@@ -671,7 +675,9 @@ async def voice_recipe(callback: CallbackQuery):
     loading = await callback.message.answer("🔊 Озвучиваю рецепт...")
 
     try:
-        audio_bytes = await asyncio.to_thread(generate_voice, recipe)
+        audio_bytes = await asyncio.to_thread(
+            generate_voice_yandex, recipe
+        )
 
         audio_file = BufferedInputFile(
             audio_bytes,
@@ -751,7 +757,7 @@ async def save_recipe(callback: CallbackQuery):
 
 async def main():
     await init_db()
-    print("AI ШЕФ БОТ запущен 🚀")
+    print("TwoChefs Bot запущен 🚀")
     await dp.start_polling(bot)
 
 # =========================================

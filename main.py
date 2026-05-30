@@ -276,7 +276,7 @@ def generate_voice_yandex(text: str) -> bytes:
     data = {
         "text": text,
         "lang": "ru-RU",
-        "voice": "alena",
+        "voice": "zahar",
         "emotion": "good",
         "speed": "1.0",
         "format": "mp3",

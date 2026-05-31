@@ -2,7 +2,6 @@ import os
 import logging
 import asyncio
 import aiosqlite
-import io
 import requests
 
 from datetime import date
@@ -58,6 +57,12 @@ if not YANDEX_API_KEY:
 # =========================================
 
 gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+
+# =========================================
+# ADMINS
+# =========================================
+
+ADMIN_IDS = [508181453, 2029800860]
 
 # =========================================
 # PROMPTS
@@ -227,7 +232,8 @@ async def init_db():
                 chat_id INTEGER PRIMARY KEY,
                 plan TEXT DEFAULT 'free',
                 recipes_today INTEGER DEFAULT 0,
-                last_reset TEXT
+                last_reset TEXT,
+                expires_at TEXT
             )
         """)
         await db.commit()
@@ -236,7 +242,16 @@ async def init_db():
 # SUBSCRIPTION HELPERS
 # =========================================
 
+PLAN_LIMITS = {
+    "free": 3,
+    "pro": 10,
+    "premium": 99999
+}
+
 async def get_user_plan(chat_id):
+    if chat_id in ADMIN_IDS:
+        return "premium", 0
+
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             "SELECT plan, recipes_today, last_reset FROM subscriptions WHERE chat_id = ?",
@@ -255,6 +270,20 @@ async def get_user_plan(chat_id):
             await db.commit()
             return plan, 0
         return plan, count
+
+async def increment_recipe_count(chat_id):
+    if chat_id in ADMIN_IDS:
+        return
+    today = str(date.today())
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            INSERT INTO subscriptions (chat_id, recipes_today, last_reset)
+            VALUES (?, 1, ?)
+            ON CONFLICT(chat_id) DO UPDATE SET
+                recipes_today = recipes_today + 1,
+                last_reset = ?
+        """, (chat_id, today, today))
+        await db.commit()
 
 # =========================================
 # MEMORY
@@ -414,6 +443,28 @@ def recipe_inline():
     )
 
 # =========================================
+# SUBSCRIPTION INLINE BUTTONS
+# =========================================
+
+def subscription_inline():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="⭐ Купить PRO — 299 ₽/мес",
+                    callback_data="buy_pro"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="👑 Купить PREMIUM — 599 ₽/мес",
+                    callback_data="buy_premium"
+                )
+            ]
+        ]
+    )
+
+# =========================================
 # START
 # =========================================
 
@@ -511,10 +562,20 @@ async def submenu_callback(callback: CallbackQuery):
 async def subscription(message: Message):
     plan, count = await get_user_plan(message.chat.id)
 
+    if message.chat.id in ADMIN_IDS:
+        admin_text = "👨‍💻 Режим разработчика — PREMIUM активен\n\n"
+    else:
+        admin_text = ""
+
+    limits = {"free": 3, "pro": 10, "premium": "∞"}
+    limit = limits.get(plan, 3)
+
     text = (
+        f"{admin_text}"
         f"🍽️ Хватит готовить одно и то же.\n"
         f"Твой личный шеф-повар уже в телефоне.\n\n"
-        f"👑 Ваш текущий план: {plan.upper()}\n\n"
+        f"👑 Ваш текущий план: {plan.upper()}\n"
+        f"📊 Рецептов сегодня: {count} из {limit}\n\n"
         "🆓 FREE — бесплатно\n"
         "Попробуй и почувствуй разницу.\n"
         "— 3 рецепта в день\n\n"
@@ -522,18 +583,49 @@ async def subscription(message: Message):
         "Меньше чем чашка кофе — а пользы на месяц вперёд.\n"
         "— 10 рецептов в день\n"
         "— точный расчёт КБЖУ\n"
+        "— озвучка рецептов\n"
         "— идеально для правильного питания\n\n"
         "👑 PREMIUM — 599 ₽/мес\n"
         "Всё и сразу. Без ограничений. Без компромиссов.\n"
         "— безлимитные рецепты 24/7\n"
         "— КБЖУ для каждого блюда\n"
+        "— озвучка рецептов\n"
         "— максимальная скорость ответа\n"
         "— первым получаешь новые функции\n\n"
-        "💳 Оплата скоро будет доступна\n"
-        "Готовь как профи. Каждый день. 🔥"
+        "💳 Выбери свой план 👇"
     )
 
-    await message.answer(text)
+    await message.answer(text, reply_markup=subscription_inline())
+
+# =========================================
+# BUY CALLBACKS
+# =========================================
+
+@dp.callback_query(F.data == "buy_pro")
+async def buy_pro(callback: CallbackQuery):
+    await callback.message.answer(
+        "⭐ План PRO — 299 ₽/мес\n\n"
+        "Что входит:\n"
+        "— 10 рецептов в день\n"
+        "— точный расчёт КБЖУ\n"
+        "— озвучка рецептов\n\n"
+        "🔜 Оплата скоро будет доступна!\n"
+        "Следи за обновлениями 👑"
+    )
+
+@dp.callback_query(F.data == "buy_premium")
+async def buy_premium(callback: CallbackQuery):
+    await callback.message.answer(
+        "👑 План PREMIUM — 599 ₽/мес\n\n"
+        "Что входит:\n"
+        "— безлимитные рецепты 24/7\n"
+        "— КБЖУ для каждого блюда\n"
+        "— озвучка рецептов\n"
+        "— максимальная скорость\n"
+        "— первым получаешь новые функции\n\n"
+        "🔜 Оплата скоро будет доступна!\n"
+        "Следи за обновлениями 👑"
+    )
 
 # =========================================
 # FAVORITES
@@ -617,6 +709,7 @@ async def chef(message: Message):
         return
 
     user_text = message.text
+    plan, count = await get_user_plan(message.chat.id)
 
     if is_kbju_request(user_text):
 
@@ -646,6 +739,14 @@ async def chef(message: Message):
 
         return
 
+    limit = PLAN_LIMITS.get(plan, 3)
+    if count >= limit:
+        await message.answer(
+            f"❌ Лимит рецептов на сегодня исчерпан ({limit} шт)\n\n"
+            "👑 Улучшите план в разделе Подписка"
+        )
+        return
+
     loading = await message.answer("👨‍🍳 Шеф готовит рецепт...")
 
     try:
@@ -658,6 +759,7 @@ async def chef(message: Message):
         recipe = response.text
         last_recipes[message.chat.id] = recipe
         last_category[message.chat.id] = "male"
+        await increment_recipe_count(message.chat.id)
         await loading.delete()
         await message.answer(recipe, reply_markup=recipe_inline())
 

@@ -107,7 +107,7 @@ system_prompt_recipe = """
 ДЕТАЛИ НАРЕЗКИ — всегда указывай как именно нарезать:
 - Не "нарежьте картофель" → а "нарежьте картофель кубиками по 2 см"
 - Не "нарежьте лук" → а "нарежьте репчатый лук тонкими полукольцами"
-- Не "нарежьте мясо" → а "нарежьте мясо поперёк волокон полосками толщиной 1 см"
+- Не "нарежьте мясо" → а "нарежьте мясо поперёк волокон полосками толщиной 1 км"
 - Не "нарежьте морковь" → а "натрите морковь на крупной тёрке"
 - Всегда указывай размер кусочков или способ нарезки для каждого ингредиента
 
@@ -224,6 +224,7 @@ async def init_db():
         await db.execute("""
             CREATE TABLE IF NOT EXISTS user_memory (
                 chat_id INTEGER PRIMARY KEY,
+                name TEXT,
                 preferences TEXT
             )
         """)
@@ -286,11 +287,34 @@ async def increment_recipe_count(chat_id):
         await db.commit()
 
 # =========================================
+# USER MEMORY HELPERS
+# =========================================
+
+async def get_user_name(chat_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT name FROM user_memory WHERE chat_id = ?",
+            (chat_id,)
+        )
+        row = await cursor.fetchone()
+        return row[0] if row else None
+
+async def save_user_name(chat_id, name):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            INSERT INTO user_memory (chat_id, name)
+            VALUES (?, ?)
+            ON CONFLICT(chat_id) DO UPDATE SET name = ?
+        """, (chat_id, name, name))
+        await db.commit()
+
+# =========================================
 # MEMORY
 # =========================================
 
 last_recipes = {}
 last_category = {}
+waiting_for_name = set()
 
 # =========================================
 # YANDEX TTS
@@ -418,29 +442,33 @@ def submenu_meat():
 # RECIPE INLINE BUTTONS
 # =========================================
 
-def recipe_inline():
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="🔊 Озвучить рецепт",
-                    callback_data="voice_recipe"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="📊 Рассчитать КБЖУ",
-                    callback_data="calc_kbju"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="💾 Сохранить рецепт",
-                    callback_data="save_recipe"
-                )
-            ]
-        ]
-    )
+def recipe_inline(plan: str = "free"):
+    buttons = []
+
+    if plan == "premium":
+        buttons.append([
+            InlineKeyboardButton(
+                text="🔊 Озвучить рецепт",
+                callback_data="voice_recipe"
+            )
+        ])
+
+    if plan in ("pro", "premium"):
+        buttons.append([
+            InlineKeyboardButton(
+                text="📊 Рассчитать КБЖУ",
+                callback_data="calc_kbju"
+            )
+        ])
+
+    buttons.append([
+        InlineKeyboardButton(
+            text="💾 Сохранить рецепт",
+            callback_data="save_recipe"
+        )
+    ])
+
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 # =========================================
 # SUBSCRIPTION INLINE BUTTONS
@@ -451,13 +479,13 @@ def subscription_inline():
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="⭐ Купить PRO — 299 ₽/мес",
+                    text="⭐ Купить PRO — 399 ₽/мес",
                     callback_data="buy_pro"
                 )
             ],
             [
                 InlineKeyboardButton(
-                    text="👑 Купить PREMIUM — 599 ₽/мес",
+                    text="👑 Купить PREMIUM — 699 ₽/мес",
                     callback_data="buy_premium"
                 )
             ]
@@ -470,12 +498,21 @@ def subscription_inline():
 
 @dp.message(CommandStart())
 async def start(message: Message):
-    await message.answer(
-        f"Привет, {message.from_user.first_name}! 👋\n\n"
-        "Выбирай категорию или напиши название блюда.\n"
-        "Например: паста карбонара, стейк, тирамису 🍽️",
-        reply_markup=main_keyboard
-    )
+    user_name = await get_user_name(message.chat.id)
+
+    if not user_name:
+        waiting_for_name.add(message.chat.id)
+        await message.answer(
+            f"Привет! 👋 Я TwoChefs Bot — два шефа в одном боте.\n\n"
+            "Как тебя зовут? Напиши своё имя 😊"
+        )
+    else:
+        await message.answer(
+            f"Привет, {user_name}! 👋\n\n"
+            "Выбирай категорию или напиши название блюда.\n"
+            "Например: паста карбонара, стейк, тирамису 🍽️",
+            reply_markup=main_keyboard
+        )
 
 # =========================================
 # SUBMENUS
@@ -527,6 +564,8 @@ SUBMENU_PROMPTS = {
 @dp.callback_query(F.data.in_(SUBMENU_PROMPTS.keys()))
 async def submenu_callback(callback: CallbackQuery):
     user_text = SUBMENU_PROMPTS[callback.data]
+    plan, count = await get_user_plan(callback.message.chat.id)
+    user_name = await get_user_name(callback.message.chat.id)
 
     if callback.data in ("recipe_pobaloat", "recipe_sladkoe", "recipe_legkoe", "recipe_zdorovoe"):
         last_category[callback.message.chat.id] = "female"
@@ -536,16 +575,20 @@ async def submenu_callback(callback: CallbackQuery):
     loading = await callback.message.answer("👨‍🍳 Шеф готовит рецепт...")
 
     try:
+        prompt = system_prompt_recipe
+        if user_name and plan == "premium":
+            prompt += f"\n\nОбращайся к пользователю по имени {user_name} в рецепте и совете шефа."
+
         response = await asyncio.to_thread(
             gemini_client.models.generate_content,
             model="gemini-2.5-flash",
-            contents=system_prompt_recipe + "\n\n" + user_text
+            contents=prompt + "\n\n" + user_text
         )
 
         recipe = response.text
         last_recipes[callback.message.chat.id] = recipe
         await loading.delete()
-        await callback.message.answer(recipe, reply_markup=recipe_inline())
+        await callback.message.answer(recipe, reply_markup=recipe_inline(plan))
 
     except Exception as e:
         try:
@@ -577,20 +620,17 @@ async def subscription(message: Message):
         f"👑 Ваш текущий план: {plan.upper()}\n"
         f"📊 Рецептов сегодня: {count} из {limit}\n\n"
         "🆓 FREE — бесплатно\n"
-        "Попробуй и почувствуй разницу.\n"
         "— 3 рецепта в день\n\n"
-        "⭐ PRO — 299 ₽/мес\n"
+        "⭐ PRO — 399 ₽/мес\n"
         "Меньше чем чашка кофе — а пользы на месяц вперёд.\n"
         "— 10 рецептов в день\n"
-        "— точный расчёт КБЖУ\n"
-        "— озвучка рецептов\n"
-        "— идеально для правильного питания\n\n"
-        "👑 PREMIUM — 599 ₽/мес\n"
+        "— точный расчёт КБЖУ\n\n"
+        "👑 PREMIUM — 699 ₽/мес\n"
         "Всё и сразу. Без ограничений. Без компромиссов.\n"
         "— безлимитные рецепты 24/7\n"
         "— КБЖУ для каждого блюда\n"
-        "— озвучка рецептов\n"
-        "— максимальная скорость ответа\n"
+        "— озвучка рецептов голосом шефа 🔊\n"
+        "— бот знает тебя по имени 👤\n"
         "— первым получаешь новые функции\n\n"
         "💳 Выбери свой план 👇"
     )
@@ -604,11 +644,10 @@ async def subscription(message: Message):
 @dp.callback_query(F.data == "buy_pro")
 async def buy_pro(callback: CallbackQuery):
     await callback.message.answer(
-        "⭐ План PRO — 299 ₽/мес\n\n"
+        "⭐ План PRO — 399 ₽/мес\n\n"
         "Что входит:\n"
         "— 10 рецептов в день\n"
-        "— точный расчёт КБЖУ\n"
-        "— озвучка рецептов\n\n"
+        "— точный расчёт КБЖУ\n\n"
         "🔜 Оплата скоро будет доступна!\n"
         "Следи за обновлениями 👑"
     )
@@ -616,12 +655,12 @@ async def buy_pro(callback: CallbackQuery):
 @dp.callback_query(F.data == "buy_premium")
 async def buy_premium(callback: CallbackQuery):
     await callback.message.answer(
-        "👑 План PREMIUM — 599 ₽/мес\n\n"
+        "👑 План PREMIUM — 699 ₽/мес\n\n"
         "Что входит:\n"
         "— безлимитные рецепты 24/7\n"
         "— КБЖУ для каждого блюда\n"
-        "— озвучка рецептов\n"
-        "— максимальная скорость\n"
+        "— озвучка рецептов голосом шефа 🔊\n"
+        "— бот знает тебя по имени 👤\n"
         "— первым получаешь новые функции\n\n"
         "🔜 Оплата скоро будет доступна!\n"
         "Следи за обновлениями 👑"
@@ -709,9 +748,32 @@ async def chef(message: Message):
         return
 
     user_text = message.text
-    plan, count = await get_user_plan(message.chat.id)
 
+    # ===== ОЖИДАНИЕ ИМЕНИ =====
+    if message.chat.id in waiting_for_name:
+        name = user_text.strip()
+        await save_user_name(message.chat.id, name)
+        waiting_for_name.discard(message.chat.id)
+        await message.answer(
+            f"Отлично, {name}! 🎉\n\n"
+            "Добро пожаловать к двум шефам.\n"
+            "Выбирай категорию или напиши название блюда 👇",
+            reply_markup=main_keyboard
+        )
+        return
+
+    plan, count = await get_user_plan(message.chat.id)
+    user_name = await get_user_name(message.chat.id)
+
+    # ===== КБЖУ ЗАПРОС =====
     if is_kbju_request(user_text):
+
+        if plan not in ("pro", "premium") and message.chat.id not in ADMIN_IDS:
+            await message.answer(
+                "📊 Расчёт КБЖУ доступен в планах PRO и PREMIUM\n\n"
+                "👑 Улучши план в разделе Подписка"
+            )
+            return
 
         recipe = last_recipes.get(message.chat.id)
         loading = await message.answer("📊 Считаю КБЖУ...")
@@ -739,6 +801,7 @@ async def chef(message: Message):
 
         return
 
+    # ===== ЛИМИТ РЕЦЕПТОВ =====
     limit = PLAN_LIMITS.get(plan, 3)
     if count >= limit:
         await message.answer(
@@ -750,10 +813,14 @@ async def chef(message: Message):
     loading = await message.answer("👨‍🍳 Шеф готовит рецепт...")
 
     try:
+        prompt = system_prompt_recipe
+        if user_name and plan == "premium":
+            prompt += f"\n\nОбращайся к пользователю по имени {user_name} в рецепте и совете шефа."
+
         response = await asyncio.to_thread(
             gemini_client.models.generate_content,
             model="gemini-2.5-flash",
-            contents=system_prompt_recipe + "\n\n" + user_text
+            contents=prompt + "\n\n" + user_text
         )
 
         recipe = response.text
@@ -761,7 +828,7 @@ async def chef(message: Message):
         last_category[message.chat.id] = "male"
         await increment_recipe_count(message.chat.id)
         await loading.delete()
-        await message.answer(recipe, reply_markup=recipe_inline())
+        await message.answer(recipe, reply_markup=recipe_inline(plan))
 
     except Exception as e:
         try:
@@ -776,6 +843,15 @@ async def chef(message: Message):
 
 @dp.callback_query(F.data == "voice_recipe")
 async def voice_recipe(callback: CallbackQuery):
+
+    plan, _ = await get_user_plan(callback.message.chat.id)
+
+    if plan != "premium" and callback.message.chat.id not in ADMIN_IDS:
+        await callback.message.answer(
+            "🔊 Озвучка доступна только в плане PREMIUM\n\n"
+            "👑 Улучши план в разделе Подписка"
+        )
+        return
 
     recipe = last_recipes.get(callback.message.chat.id)
 
@@ -814,6 +890,15 @@ async def voice_recipe(callback: CallbackQuery):
 
 @dp.callback_query(F.data == "calc_kbju")
 async def calc_kbju(callback: CallbackQuery):
+
+    plan, _ = await get_user_plan(callback.message.chat.id)
+
+    if plan not in ("pro", "premium") and callback.message.chat.id not in ADMIN_IDS:
+        await callback.message.answer(
+            "📊 КБЖУ доступно в планах PRO и PREMIUM\n\n"
+            "👑 Улучши план в разделе Подписка"
+        )
+        return
 
     recipe = last_recipes.get(callback.message.chat.id)
 

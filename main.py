@@ -261,12 +261,13 @@ async def get_user_plan(chat_id):
 # =========================================
 
 last_recipes = {}
+last_category = {}
 
 # =========================================
 # YANDEX TTS
 # =========================================
 
-def generate_voice_yandex(text: str) -> bytes:
+def generate_voice_yandex(text: str, voice: str = "zahar") -> bytes:
     url = "https://tts.api.cloud.yandex.net/speech/v1/tts:synthesize"
 
     headers = {
@@ -276,7 +277,7 @@ def generate_voice_yandex(text: str) -> bytes:
     data = {
         "text": text,
         "lang": "ru-RU",
-        "voice": "zahar",
+        "voice": voice,
         "emotion": "good",
         "speed": "1.0",
         "format": "mp3",
@@ -475,6 +476,12 @@ SUBMENU_PROMPTS = {
 @dp.callback_query(F.data.in_(SUBMENU_PROMPTS.keys()))
 async def submenu_callback(callback: CallbackQuery):
     user_text = SUBMENU_PROMPTS[callback.data]
+
+    if callback.data in ("recipe_pobaloat", "recipe_sladkoe", "recipe_legkoe", "recipe_zdorovoe"):
+        last_category[callback.message.chat.id] = "female"
+    else:
+        last_category[callback.message.chat.id] = "male"
+
     loading = await callback.message.answer("👨‍🍳 Шеф готовит рецепт...")
 
     try:
@@ -650,6 +657,7 @@ async def chef(message: Message):
 
         recipe = response.text
         last_recipes[message.chat.id] = recipe
+        last_category[message.chat.id] = "male"
         await loading.delete()
         await message.answer(recipe, reply_markup=recipe_inline())
 
@@ -676,8 +684,11 @@ async def voice_recipe(callback: CallbackQuery):
     loading = await callback.message.answer("🔊 Озвучиваю рецепт...")
 
     try:
+        category = last_category.get(callback.message.chat.id, "male")
+        voice = "alena" if category == "female" else "zahar"
+
         audio_bytes = await asyncio.to_thread(
-            generate_voice_yandex, recipe
+            generate_voice_yandex, recipe, voice
         )
 
         audio_file = BufferedInputFile(

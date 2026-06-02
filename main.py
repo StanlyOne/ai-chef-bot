@@ -107,7 +107,7 @@ system_prompt_recipe = """
 ДЕТАЛИ НАРЕЗКИ — всегда указывай как именно нарезать:
 - Не "нарежьте картофель" → а "нарежьте картофель кубиками по 2 см"
 - Не "нарежьте лук" → а "нарежьте репчатый лук тонкими полукольцами"
-- Не "нарежьте мясо" → а "нарежьте мясо поперёк волокон полосками толщиной 1 км"
+- Не "нарежьте мясо" → а "нарежьте мясо поперёк волокон полосками толщиной 1 см"
 - Не "нарежьте морковь" → а "натрите морковь на крупной тёрке"
 - Всегда указывай размер кусочков или способ нарезки для каждого ингредиента
 
@@ -346,6 +346,25 @@ def generate_voice_yandex(text: str, voice: str = "zahar") -> bytes:
     return response.content
 
 # =========================================
+# GEMINI WITH RETRY
+# =========================================
+
+async def generate_with_retry(prompt: str, max_retries: int = 3) -> str:
+    for attempt in range(max_retries):
+        try:
+            response = await asyncio.to_thread(
+                gemini_client.models.generate_content,
+                model="gemini-2.5-flash",
+                contents=prompt
+            )
+            return response.text
+        except Exception as e:
+            if "503" in str(e) and attempt < max_retries - 1:
+                await asyncio.sleep(3)
+                continue
+            raise e
+
+# =========================================
 # MAIN KEYBOARD
 # =========================================
 
@@ -503,7 +522,7 @@ async def start(message: Message):
     if not user_name:
         waiting_for_name.add(message.chat.id)
         await message.answer(
-            f"Привет! 👋 Я TwoChefs Bot — два шефа в одном боте.\n\n"
+            "Привет! 👋 Я TwoChefs Bot — два шефа в одном боте.\n\n"
             "Как тебя зовут? Напиши своё имя 😊"
         )
     else:
@@ -579,13 +598,7 @@ async def submenu_callback(callback: CallbackQuery):
         if user_name and plan == "premium":
             prompt += f"\n\nОбращайся к пользователю по имени {user_name} в рецепте и совете шефа."
 
-        response = await asyncio.to_thread(
-            gemini_client.models.generate_content,
-            model="gemini-2.5-flash",
-            contents=prompt + "\n\n" + user_text
-        )
-
-        recipe = response.text
+        recipe = await generate_with_retry(prompt + "\n\n" + user_text)
         last_recipes[callback.message.chat.id] = recipe
         await loading.delete()
         await callback.message.answer(recipe, reply_markup=recipe_inline(plan))
@@ -783,14 +796,9 @@ async def chef(message: Message):
             if recipe:
                 content = f"{user_text}\n\nРецепт:\n{recipe}"
 
-            response = await asyncio.to_thread(
-                gemini_client.models.generate_content,
-                model="gemini-2.5-flash",
-                contents=system_prompt_kbju + "\n\n" + content
-            )
-
+            result = await generate_with_retry(system_prompt_kbju + "\n\n" + content)
             await loading.delete()
-            await message.answer(response.text)
+            await message.answer(result)
 
         except Exception as e:
             try:
@@ -817,13 +825,7 @@ async def chef(message: Message):
         if user_name and plan == "premium":
             prompt += f"\n\nОбращайся к пользователю по имени {user_name} в рецепте и совете шефа."
 
-        response = await asyncio.to_thread(
-            gemini_client.models.generate_content,
-            model="gemini-2.5-flash",
-            contents=prompt + "\n\n" + user_text
-        )
-
-        recipe = response.text
+        recipe = await generate_with_retry(prompt + "\n\n" + user_text)
         last_recipes[message.chat.id] = recipe
         last_category[message.chat.id] = "male"
         await increment_recipe_count(message.chat.id)
@@ -909,14 +911,11 @@ async def calc_kbju(callback: CallbackQuery):
     loading = await callback.message.answer("📊 Считаю КБЖУ...")
 
     try:
-        response = await asyncio.to_thread(
-            gemini_client.models.generate_content,
-            model="gemini-2.5-flash",
-            contents=system_prompt_kbju + "\n\nРассчитай КБЖУ для этого рецепта:\n\n" + recipe
+        result = await generate_with_retry(
+            system_prompt_kbju + "\n\nРассчитай КБЖУ для этого рецепта:\n\n" + recipe
         )
-
         await loading.delete()
-        await callback.message.answer(response.text)
+        await callback.message.answer(result)
 
     except Exception as e:
         try:

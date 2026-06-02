@@ -365,6 +365,46 @@ async def generate_with_retry(prompt: str, max_retries: int = 3) -> str:
             raise e
 
 # =========================================
+# GEMINI STREAMING
+# =========================================
+
+async def generate_streaming(prompt: str, loading_msg, max_retries: int = 3) -> str:
+    for attempt in range(max_retries):
+        try:
+            full_text = ""
+            last_update = ""
+
+            def stream_response():
+                return list(gemini_client.models.generate_content_stream(
+                    model="gemini-2.5-flash",
+                    contents=prompt
+                ))
+
+            chunks = await asyncio.to_thread(stream_response)
+
+            for chunk in chunks:
+                if chunk.text:
+                    full_text += chunk.text
+                    if len(full_text) - len(last_update) > 150:
+                        try:
+                            await loading_msg.edit_text(full_text)
+                            last_update = full_text
+                            await asyncio.sleep(0.3)
+                        except:
+                            pass
+
+            if full_text:
+                await loading_msg.edit_text(full_text)
+
+            return full_text
+
+        except Exception as e:
+            if "503" in str(e) and attempt < max_retries - 1:
+                await asyncio.sleep(3)
+                continue
+            raise e
+
+# =========================================
 # MAIN KEYBOARD
 # =========================================
 
@@ -598,10 +638,12 @@ async def submenu_callback(callback: CallbackQuery):
         if user_name and plan == "premium":
             prompt += f"\n\nОбращайся к пользователю по имени {user_name} в рецепте и совете шефа."
 
-        recipe = await generate_with_retry(prompt + "\n\n" + user_text)
+        recipe = await generate_streaming(
+            prompt + "\n\n" + user_text,
+            loading
+        )
         last_recipes[callback.message.chat.id] = recipe
-        await loading.delete()
-        await callback.message.answer(recipe, reply_markup=recipe_inline(plan))
+        await loading.edit_text(recipe, reply_markup=recipe_inline(plan))
 
     except Exception as e:
         try:
@@ -825,12 +867,14 @@ async def chef(message: Message):
         if user_name and plan == "premium":
             prompt += f"\n\nОбращайся к пользователю по имени {user_name} в рецепте и совете шефа."
 
-        recipe = await generate_with_retry(prompt + "\n\n" + user_text)
+        recipe = await generate_streaming(
+            prompt + "\n\n" + user_text,
+            loading
+        )
         last_recipes[message.chat.id] = recipe
         last_category[message.chat.id] = "male"
         await increment_recipe_count(message.chat.id)
-        await loading.delete()
-        await message.answer(recipe, reply_markup=recipe_inline(plan))
+        await loading.edit_text(recipe, reply_markup=recipe_inline(plan))
 
     except Exception as e:
         try:

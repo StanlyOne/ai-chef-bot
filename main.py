@@ -385,16 +385,13 @@ async def generate_streaming(prompt: str, loading_msg, max_retries: int = 3) -> 
             for chunk in chunks:
                 if chunk.text:
                     full_text += chunk.text
-                    if len(full_text) - len(last_update) > 150:
+                    if len(full_text) - len(last_update) > 150 and full_text != last_update:
                         try:
                             await loading_msg.edit_text(full_text)
                             last_update = full_text
                             await asyncio.sleep(0.3)
                         except:
                             pass
-
-            if full_text:
-                await loading_msg.edit_text(full_text)
 
             return full_text
 
@@ -643,7 +640,11 @@ async def submenu_callback(callback: CallbackQuery):
             loading
         )
         last_recipes[callback.message.chat.id] = recipe
-        await loading.edit_text(recipe, reply_markup=recipe_inline(plan))
+
+        try:
+            await loading.edit_text(recipe, reply_markup=recipe_inline(plan))
+        except:
+            await loading.edit_reply_markup(reply_markup=recipe_inline(plan))
 
     except Exception as e:
         try:
@@ -874,7 +875,11 @@ async def chef(message: Message):
         last_recipes[message.chat.id] = recipe
         last_category[message.chat.id] = "male"
         await increment_recipe_count(message.chat.id)
-        await loading.edit_text(recipe, reply_markup=recipe_inline(plan))
+
+        try:
+            await loading.edit_text(recipe, reply_markup=recipe_inline(plan))
+        except:
+            await loading.edit_reply_markup(reply_markup=recipe_inline(plan))
 
     except Exception as e:
         try:

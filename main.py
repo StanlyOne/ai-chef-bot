@@ -3,8 +3,9 @@ import logging
 import asyncio
 import aiosqlite
 import requests
+import random
 
-from datetime import date
+from datetime import date, timedelta
 from dotenv import load_dotenv
 from google import genai
 
@@ -65,131 +66,122 @@ gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 ADMIN_IDS = [508181453, 2029800860]
 
 # =========================================
+# VARIETY HINTS
+# =========================================
+
+FISH_VARIETY = [
+    "лосось", "треска", "тунец", "дорадо", "сибас",
+    "форель", "палтус", "скумбрия", "судак", "окунь"
+]
+
+MEAT_VARIETY = [
+    "говяжья вырезка", "свиная шея", "куриная грудка",
+    "баранина", "утиная грудка", "индейка", "кролик",
+    "телятина", "куриные бёдра", "свиная вырезка"
+]
+
+DESSERT_VARIETY = [
+    "шоколадный фондан", "тирамису", "панна котта",
+    "крем-брюле", "чизкейк", "маффины", "эклеры",
+    "медовик", "наполеон", "профитроли"
+]
+
+PP_VARIETY = [
+    "салат с киноа", "боул с курицей", "омлет с овощами",
+    "греческий салат", "суп минестроне", "запечённые овощи",
+    "смузи боул", "авокадо тост", "тыквенный суп", "рыбные котлеты на пару"
+]
+
+FAST_VARIETY = [
+    "паста", "яичница", "сэндвич", "овощной суп",
+    "жареный рис", "питта с начинкой", "тост с авокадо",
+    "быстрый омлет", "макароны с соусом", "блины"
+]
+
+def get_variety_hint(category: str) -> str:
+    hints = {
+        "recipe_legkoe": random.choice(PP_VARIETY),
+        "recipe_zdorovoe": random.choice(PP_VARIETY),
+        "recipe_20min": random.choice(FAST_VARIETY),
+        "recipe_bystro": random.choice(FAST_VARIETY),
+        "recipe_pobaloat": random.choice(DESSERT_VARIETY),
+        "recipe_sladkoe": random.choice(DESSERT_VARIETY),
+        "recipe_sytnoe": random.choice(MEAT_VARIETY),
+        "recipe_ogon": random.choice(MEAT_VARIETY),
+    }
+    return hints.get(category, "")
+
+# =========================================
 # PROMPTS
 # =========================================
 
 system_prompt_recipe = """
-Ты — шеф-повар с многолетним опытом работы в ресторанах высокой кухни.
-Ты говоришь только на русском языке. Никогда не используй слова на других языках.
+Ты — шеф-повар высокой кухни. Говоришь только на русском языке.
 
-ТВОЯ ЗАДАЧА:
-Создавать простые, вкусные и реалистичные рецепты которые человек захочет приготовить прямо сейчас.
+ЗАПРЕТЫ:
+- Никакого markdown: **, ##, _ и т.п.
+- Никаких иностранных слов
+- Никаких сложных техник: су-вид, темперирование
+- Никогда не повторяй одно и то же блюдо
 
-СТРОГИЕ ЗАПРЕТЫ — никогда не нарушай:
-- Никакого markdown: никаких **, ##, _текст_, и т.п.
-- Никаких иностранных слов: oil, meanwhile, mix, saute и т.п.
-- Никаких выдуманных или экзотических блюд
-- Никаких сложных техник: су-вид, темперирование, сферификация
-- Никогда не повторяй одно и то же блюдо дважды подряд
-- Каждый раз предлагай разные блюда, не зацикливайся на курице с овощами
+ИНГРЕДИЕНТЫ — всегда конкретно:
+- лук → репчатый лук / красный лук / шалот
+- перец → болгарский красный перец / перец Рамиро / перец чили
+- масло → сливочное масло / оливковое масло
+- зелень → петрушка / укроп / базилик
+- хлеб → чиабатта / багет / ржаной хлеб
 
-УТОЧНЕНИЕ ИНГРЕДИЕНТОВ — всегда указывай конкретный вид продукта:
-- Не "сыр" → а "сыр Халуми" или "сыр Сулугуни" или "сыр Чеддер"
-- Не "мясо" → а "куриная грудка" или "свиная шея" или "говяжья вырезка"
-- Не "рыба" → а "филе лосося" или "треска" или "тунец"
-- Не "зелень" → а "петрушка" или "укроп" или "базилик"
-- Не "масло" → а "сливочное масло" или "оливковое масло" или "подсолнечное масло"
-- Не "лук" → а "репчатый лук" или "красный лук" или "лук-порей" или "шалот"
-- Не "перец" → а "болгарский красный перец" или "перец Рамиро" или "перец чили"
-- Не "салат" → а "салат Романо" или "айсберг" или "руккола"
-- Не "хлеб" → а "чиабатта" или "багет" или "ржаной хлеб" или "пшеничный тост"
+ЯЙЦА:
+- Только желтки → "яичный желток — 2 шт"
+- Только белки → "яичный белок — 2 шт"
+- Целое яйцо → "куриное яйцо — 1 шт"
 
-ЯЙЦА — очень важно, строго соблюдай:
-- Если нужны ТОЛЬКО желтки → пиши "яичный желток — 2 шт"
-- Если нужны ТОЛЬКО белки → пиши "яичный белок — 2 шт"
-- Если нужно ЦЕЛОЕ яйцо → пиши "куриное яйцо — 1 шт"
-- НИКОГДА не пиши просто "яйца" если используешь только часть
-- Примеры:
-  Паста Карбонара → ингредиенты: "яичный желток — 3 шт", приготовление: "смешайте желтки с сыром"
-  Безе → ингредиенты: "яичный белок — 2 шт", приготовление: "взбейте белки до пиков"
-  Омлет → ингредиенты: "куриное яйцо — 2 шт", приготовление: "взбейте яйца"
+НАРЕЗКА — всегда указывай способ:
+- картофель → кубиками 2 см
+- лук → тонкими полукольцами
+- мясо → поперёк волокон полосками 1 см
 
-ДЕТАЛИ НАРЕЗКИ — всегда указывай как именно нарезать:
-- Не "нарежьте картофель" → а "нарежьте картофель кубиками по 2 см"
-- Не "нарежьте лук" → а "нарежьте репчатый лук тонкими полукольцами"
-- Не "нарежьте мясо" → а "нарежьте мясо поперёк волокон полосками толщиной 1 см"
-- Не "нарежьте морковь" → а "натрите морковь на крупной тёрке"
-- Всегда указывай размер кусочков или способ нарезки для каждого ингредиента
+ПРИГОТОВЛЕНИЕ — каждый шаг подробно:
+- обжарьте → обжарьте на среднем огне 3-4 минуты до золотистой корочки
+- варите → варите на слабом огне 10 минут до мягкости
 
-ДЕТАЛИ ПРИГОТОВЛЕНИЯ — каждый шаг должен быть подробным:
-- Не "обжарьте" → а "обжарьте на среднем огне 3-4 минуты до золотистой корочки"
-- Не "варите" → а "варите на слабом огне 10 минут до мягкости"
-- Всегда указывай температуру огня, время и визуальный результат
+ЕДИНИЦЫ — только г, кг, мл, л:
+- 1 огурец → 150 г огурца
+- стакан молока → 200 мл молока
 
-ЕДИНИЦЫ ИЗМЕРЕНИЯ — ТОЛЬКО граммы, килограммы, миллилитры, литры:
-- Правильно: 150 г огурца, 100 г репчатого лука, 3 г соли, 200 мл молока
-- Неправильно: 1 огурец, 1 луковица, щепотка соли, стакан молока
-- Любой штучный продукт переводи в граммы. Всегда. Без исключений.
-- Для яиц используй шт — но только с уточнением: желток, белок или целое яйцо
+РЕЦЕПТ — строго на 1 порцию, не более 6 шагов, до 40 минут.
 
-КАЖДЫЙ РЕЦЕПТ — СТРОГО НА 1 ПОРЦИЮ.
-
-СЛОЖНОСТЬ:
-- Не более 6 шагов приготовления
-- Только доступные продукты из обычного супермаркета
-- Время приготовления не более 40 минут
-
-ЯЗЫК:
-- Живой, человеческий, аппетитный
-- Как будто шеф лично рассказывает рецепт другу
-- Без канцелярщины и сухих инструкций
-
-СТРУКТУРА ОТВЕТА — строго такая, без отступлений:
+СТРУКТУРА ОТВЕТА:
 
 Название блюда
 
-Краткое описание (1-2 предложения, аппетитно и по делу)
+Краткое описание (1-2 предложения)
 
 Ингредиенты:
 - ...
 
 Приготовление:
 1. ...
-2. ...
 
 Совет шефа:
 ...
-
-РЕЖИМЫ — когда пользователь пишет ключевое слово:
-- "лёгкое и полезное" → лёгкое блюдо минимум калорий и жиров
-- "здоровое питание" → блюдо богатое белком, витаминами, без сахара и жирного
-- "до 20 минут" → готовка строго не дольше 20 минут
-- "быстро и вкусно" → простое блюдо не дольше 20 минут
-- "побаловать себя" → красивый десерт который не стыдно подать гостям
-- "что-то сладкое" → простой домашний десерт
-- "сытное мясное" → сытное мясное блюдо с гарниром
-- "мясо на огне" → блюдо на сковороде или гриле с румяной корочкой
-- список продуктов → придумай реальное блюдо именно из этих продуктов
-
-КОГДА ПОЛЬЗОВАТЕЛЬ ПИШЕТ СПИСОК ПРОДУКТОВ:
-- Используй только то что он написал
-- Не предлагай докупить что-то ещё
-- Придумай блюдо которое реально готовят из этих продуктов
-- Пиши только на русском, даже если продукт написан на другом языке
 """
 
 system_prompt_kbju = """
-Ты — диетолог и нутрициолог.
-Ты говоришь только на русском языке.
+Ты — диетолог. Говоришь только на русском языке.
+Рассчитай КБЖУ для блюда которое прислал пользователь.
+Никакого markdown.
 
-ТВОЯ ЗАДАЧА:
-Рассчитать точное КБЖУ для блюда или рецепта который прислал пользователь.
+СТРУКТУРА:
 
-СТРОГИЕ ЗАПРЕТЫ:
-- Никакого markdown: никаких **, ##, и т.п.
-- Никаких иностранных слов
-- Не придумывай рецепт — только считай КБЖУ
-
-СТРУКТУРА ОТВЕТА — строго такая:
-
-КБЖУ для: [название блюда]
+КБЖУ для: [название]
 
 Калории: ... ккал
 Белки: ... г
 Жиры: ... г
 Углеводы: ... г
 
-Краткий комментарий (1-2 предложения о пользе или особенностях блюда)
+Краткий комментарий (1-2 предложения)
 """
 
 # =========================================
@@ -198,9 +190,7 @@ system_prompt_kbju = """
 
 bot = Bot(
     token=BOT_TOKEN,
-    default=DefaultBotProperties(
-        parse_mode=ParseMode.HTML
-    )
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
 )
 
 dp = Dispatcher()
@@ -322,11 +312,7 @@ waiting_for_name = set()
 
 def generate_voice_yandex(text: str, voice: str = "zahar") -> bytes:
     url = "https://tts.api.cloud.yandex.net/speech/v1/tts:synthesize"
-
-    headers = {
-        "Authorization": f"Api-Key {YANDEX_API_KEY}"
-    }
-
+    headers = {"Authorization": f"Api-Key {YANDEX_API_KEY}"}
     data = {
         "text": text,
         "lang": "ru-RU",
@@ -337,12 +323,9 @@ def generate_voice_yandex(text: str, voice: str = "zahar") -> bytes:
         "sampleRateHertz": "48000",
         "folderId": os.getenv("YANDEX_FOLDER_ID")
     }
-
     response = requests.post(url, headers=headers, data=data)
-
     if response.status_code != 200:
         raise Exception(f"Yandex TTS ошибка: {response.status_code} {response.text}")
-
     return response.content
 
 # =========================================
@@ -432,66 +415,34 @@ main_keyboard = ReplyKeyboardMarkup(
 
 def submenu_pp():
     return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="🌿 Лёгкое и полезное",
-                    callback_data="recipe_legkoe"
-                ),
-                InlineKeyboardButton(
-                    text="💪 Здоровое питание",
-                    callback_data="recipe_zdorovoe"
-                )
-            ]
-        ]
+        inline_keyboard=[[
+            InlineKeyboardButton(text="🌿 Лёгкое и полезное", callback_data="recipe_legkoe"),
+            InlineKeyboardButton(text="💪 Здоровое питание", callback_data="recipe_zdorovoe")
+        ]]
     )
 
 def submenu_fast():
     return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="⚡ До 20 минут",
-                    callback_data="recipe_20min"
-                ),
-                InlineKeyboardButton(
-                    text="🔥 Быстро и вкусно",
-                    callback_data="recipe_bystro"
-                )
-            ]
-        ]
+        inline_keyboard=[[
+            InlineKeyboardButton(text="⚡ До 20 минут", callback_data="recipe_20min"),
+            InlineKeyboardButton(text="🔥 Быстро и вкусно", callback_data="recipe_bystro")
+        ]]
     )
 
 def submenu_dessert():
     return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="🧁 Побаловать себя",
-                    callback_data="recipe_pobaloat"
-                ),
-                InlineKeyboardButton(
-                    text="🍫 Что-то сладкое",
-                    callback_data="recipe_sladkoe"
-                )
-            ]
-        ]
+        inline_keyboard=[[
+            InlineKeyboardButton(text="🧁 Побаловать себя", callback_data="recipe_pobaloat"),
+            InlineKeyboardButton(text="🍫 Что-то сладкое", callback_data="recipe_sladkoe")
+        ]]
     )
 
 def submenu_meat():
     return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="🥩 Сытное мясное",
-                    callback_data="recipe_sytnoe"
-                ),
-                InlineKeyboardButton(
-                    text="🔥 Мясо на огне",
-                    callback_data="recipe_ogon"
-                )
-            ]
-        ]
+        inline_keyboard=[[
+            InlineKeyboardButton(text="🥩 Сытное мясное", callback_data="recipe_sytnoe"),
+            InlineKeyboardButton(text="🔥 Мясо на огне", callback_data="recipe_ogon")
+        ]]
     )
 
 # =========================================
@@ -500,30 +451,11 @@ def submenu_meat():
 
 def recipe_inline(plan: str = "free"):
     buttons = []
-
     if plan == "premium":
-        buttons.append([
-            InlineKeyboardButton(
-                text="🔊 Озвучить рецепт",
-                callback_data="voice_recipe"
-            )
-        ])
-
+        buttons.append([InlineKeyboardButton(text="🔊 Озвучить рецепт", callback_data="voice_recipe")])
     if plan in ("pro", "premium"):
-        buttons.append([
-            InlineKeyboardButton(
-                text="📊 Рассчитать КБЖУ",
-                callback_data="calc_kbju"
-            )
-        ])
-
-    buttons.append([
-        InlineKeyboardButton(
-            text="💾 Сохранить рецепт",
-            callback_data="save_recipe"
-        )
-    ])
-
+        buttons.append([InlineKeyboardButton(text="📊 Рассчитать КБЖУ", callback_data="calc_kbju")])
+    buttons.append([InlineKeyboardButton(text="💾 Сохранить рецепт", callback_data="save_recipe")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 # =========================================
@@ -533,18 +465,8 @@ def recipe_inline(plan: str = "free"):
 def subscription_inline():
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="⭐ Купить PRO — 399 ₽/мес",
-                    callback_data="buy_pro"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="👑 Купить PREMIUM — 699 ₽/мес",
-                    callback_data="buy_premium"
-                )
-            ]
+            [InlineKeyboardButton(text="⭐ Купить PRO — 399 ₽/мес", callback_data="buy_pro")],
+            [InlineKeyboardButton(text="👑 Купить PREMIUM — 699 ₽/мес", callback_data="buy_premium")]
         ]
     )
 
@@ -555,7 +477,6 @@ def subscription_inline():
 @dp.message(CommandStart())
 async def start(message: Message):
     user_name = await get_user_name(message.chat.id)
-
     if not user_name:
         waiting_for_name.add(message.chat.id)
         await message.answer(
@@ -576,45 +497,33 @@ async def start(message: Message):
 
 @dp.message(F.text == "🥗 ПП рецепт")
 async def pp_submenu(message: Message):
-    await message.answer(
-        "🥗 Выбери тип блюда:",
-        reply_markup=submenu_pp()
-    )
+    await message.answer("🥗 Выбери тип блюда:", reply_markup=submenu_pp())
 
 @dp.message(F.text == "🔥 Быстрый рецепт")
 async def fast_submenu(message: Message):
-    await message.answer(
-        "🔥 Выбери тип блюда:",
-        reply_markup=submenu_fast()
-    )
+    await message.answer("🔥 Выбери тип блюда:", reply_markup=submenu_fast())
 
 @dp.message(F.text == "🍰 Десерт")
 async def dessert_submenu(message: Message):
-    await message.answer(
-        "🍰 Выбери тип десерта:",
-        reply_markup=submenu_dessert()
-    )
+    await message.answer("🍰 Выбери тип десерта:", reply_markup=submenu_dessert())
 
 @dp.message(F.text == "🥩 Мясо")
 async def meat_submenu(message: Message):
-    await message.answer(
-        "🥩 Выбери тип блюда:",
-        reply_markup=submenu_meat()
-    )
+    await message.answer("🥩 Выбери тип блюда:", reply_markup=submenu_meat())
 
 # =========================================
 # SUBMENU CALLBACKS
 # =========================================
 
 SUBMENU_PROMPTS = {
-    "recipe_legkoe": "лёгкое и полезное",
+    "recipe_legkoe": "лёгкое и полезное блюдо",
     "recipe_zdorovoe": "здоровое питание",
-    "recipe_20min": "до 20 минут",
-    "recipe_bystro": "быстро и вкусно",
-    "recipe_pobaloat": "побаловать себя",
-    "recipe_sladkoe": "что-то сладкое",
-    "recipe_sytnoe": "сытное мясное",
-    "recipe_ogon": "мясо на огне",
+    "recipe_20min": "быстрое блюдо до 20 минут",
+    "recipe_bystro": "быстро и вкусно до 20 минут",
+    "recipe_pobaloat": "красивый десерт",
+    "recipe_sladkoe": "простой домашний десерт",
+    "recipe_sytnoe": "сытное мясное блюдо",
+    "recipe_ogon": "мясо на сковороде или гриле",
 }
 
 @dp.callback_query(F.data.in_(SUBMENU_PROMPTS.keys()))
@@ -628,17 +537,17 @@ async def submenu_callback(callback: CallbackQuery):
     else:
         last_category[callback.message.chat.id] = "male"
 
+    hint = get_variety_hint(callback.data)
     loading = await callback.message.answer("👨‍🍳 Шеф готовит рецепт...")
 
     try:
         prompt = system_prompt_recipe
         if user_name and plan == "premium":
-            prompt += f"\n\nОбращайся к пользователю по имени {user_name} в рецепте и совете шефа."
+            prompt += f"\n\nОбращайся к пользователю по имени {user_name}."
 
-        recipe = await generate_streaming(
-            prompt + "\n\n" + user_text,
-            loading
-        )
+        full_prompt = f"{prompt}\n\nПриготовь: {user_text}. Используй в качестве основы: {hint}. Случайное число для разнообразия: {random.randint(1, 10000)}"
+
+        recipe = await generate_streaming(full_prompt, loading)
         last_recipes[callback.message.chat.id] = recipe
 
         try:
@@ -703,9 +612,18 @@ async def buy_pro(callback: CallbackQuery):
         "⭐ План PRO — 399 ₽/мес\n\n"
         "Что входит:\n"
         "— 10 рецептов в день\n"
-        "— точный расчёт КБЖУ\n\n"
-        "🔜 Оплата скоро будет доступна!\n"
-        "Следи за обновлениями 👑"
+        "— точный расчёт КБЖУ\n"
+        "— эксклюзивные рецепты в закрытом канале\n\n"
+        "После оплаты напиши нам свой Telegram ID 👇\n"
+        "Его можно узнать написав @userinfobot",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[[
+                InlineKeyboardButton(
+                    text="⭐ Оплатить PRO — 399 ₽/мес",
+                    url="https://t.me/tribute/app?startapp=sX7m"
+                )
+            ]]
+        )
     )
 
 @dp.callback_query(F.data == "buy_premium")
@@ -717,9 +635,18 @@ async def buy_premium(callback: CallbackQuery):
         "— КБЖУ для каждого блюда\n"
         "— озвучка рецептов голосом шефа 🔊\n"
         "— бот знает тебя по имени 👤\n"
+        "— эксклюзивные рецепты в закрытом канале\n"
         "— первым получаешь новые функции\n\n"
-        "🔜 Оплата скоро будет доступна!\n"
-        "Следи за обновлениями 👑"
+        "После оплаты напиши нам свой Telegram ID 👇\n"
+        "Его можно узнать написав @userinfobot",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[[
+                InlineKeyboardButton(
+                    text="👑 Оплатить PREMIUM — 699 ₽/мес",
+                    url="https://t.me/tribute/app?startapp=sX7w"
+                )
+            ]]
+        )
     )
 
 # =========================================
@@ -790,8 +717,91 @@ def is_kbju_request(text: str) -> bool:
         "сколько калорий", "белки жиры углеводы",
         "пищевая ценность", "бжу"
     ]
-    text_lower = text.lower()
-    return any(kw in text_lower for kw in keywords)
+    return any(kw in text.lower() for kw in keywords)
+
+# =========================================
+# ADMIN COMMANDS
+# =========================================
+
+@dp.message(F.text.startswith("/give"))
+async def give_plan(message: Message):
+    if message.chat.id not in ADMIN_IDS:
+        return
+
+    parts = message.text.split()
+    if len(parts) != 3:
+        await message.answer("Использование: /give [pro/premium/free] [chat_id]")
+        return
+
+    plan = parts[1].lower()
+    try:
+        target_id = int(parts[2])
+    except:
+        await message.answer("❌ Неверный chat_id")
+        return
+
+    if plan not in ("pro", "premium", "free"):
+        await message.answer("❌ План должен быть: pro, premium или free")
+        return
+
+    expires_at = str(date.today() + timedelta(days=30))
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            INSERT INTO subscriptions (chat_id, plan, recipes_today, last_reset, expires_at)
+            VALUES (?, ?, 0, ?, ?)
+            ON CONFLICT(chat_id) DO UPDATE SET
+                plan = ?,
+                expires_at = ?
+        """, (target_id, plan, str(date.today()), expires_at, plan, expires_at))
+        await db.commit()
+
+    await message.answer(f"✅ Пользователю {target_id} выдан план {plan.upper()} до {expires_at}")
+
+    try:
+        plan_text = {"pro": "⭐ PRO", "premium": "👑 PREMIUM", "free": "🆓 FREE"}
+        await bot.send_message(
+            target_id,
+            f"🎉 Твой план активирован!\n\n"
+            f"👑 Текущий план: {plan_text.get(plan)}\n"
+            f"📅 Действует до: {expires_at}\n\n"
+            f"Приятного использования! 🍽️"
+        )
+    except:
+        await message.answer("⚠️ Не удалось уведомить пользователя")
+
+@dp.message(F.text.startswith("/check"))
+async def check_plan(message: Message):
+    if message.chat.id not in ADMIN_IDS:
+        return
+
+    parts = message.text.split()
+    if len(parts) != 2:
+        await message.answer("Использование: /check [chat_id]")
+        return
+
+    try:
+        target_id = int(parts[1])
+    except:
+        await message.answer("❌ Неверный chat_id")
+        return
+
+    plan, count = await get_user_plan(target_id)
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT expires_at FROM subscriptions WHERE chat_id = ?",
+            (target_id,)
+        )
+        row = await cursor.fetchone()
+        expires = row[0] if row else "—"
+
+    await message.answer(
+        f"👤 Пользователь: {target_id}\n"
+        f"👑 План: {plan.upper()}\n"
+        f"📊 Рецептов сегодня: {count}\n"
+        f"📅 Действует до: {expires}"
+    )
 
 # =========================================
 # MAIN CHEF
@@ -805,7 +815,6 @@ async def chef(message: Message):
 
     user_text = message.text
 
-    # ===== ОЖИДАНИЕ ИМЕНИ =====
     if message.chat.id in waiting_for_name:
         name = user_text.strip()
         await save_user_name(message.chat.id, name)
@@ -821,9 +830,7 @@ async def chef(message: Message):
     plan, count = await get_user_plan(message.chat.id)
     user_name = await get_user_name(message.chat.id)
 
-    # ===== КБЖУ ЗАПРОС =====
     if is_kbju_request(user_text):
-
         if plan not in ("pro", "premium") and message.chat.id not in ADMIN_IDS:
             await message.answer(
                 "📊 Расчёт КБЖУ доступен в планах PRO и PREMIUM\n\n"
@@ -838,21 +845,17 @@ async def chef(message: Message):
             content = user_text
             if recipe:
                 content = f"{user_text}\n\nРецепт:\n{recipe}"
-
             result = await generate_with_retry(system_prompt_kbju + "\n\n" + content)
             await loading.delete()
             await message.answer(result)
-
         except Exception as e:
             try:
                 await loading.delete()
             except:
                 pass
             await message.answer(f"❌ Ошибка:\n{e}")
-
         return
 
-    # ===== ЛИМИТ РЕЦЕПТОВ =====
     limit = PLAN_LIMITS.get(plan, 3)
     if count >= limit:
         await message.answer(
@@ -866,12 +869,11 @@ async def chef(message: Message):
     try:
         prompt = system_prompt_recipe
         if user_name and plan == "premium":
-            prompt += f"\n\nОбращайся к пользователю по имени {user_name} в рецепте и совете шефа."
+            prompt += f"\n\nОбращайся к пользователю по имени {user_name}."
 
-        recipe = await generate_streaming(
-            prompt + "\n\n" + user_text,
-            loading
-        )
+        full_prompt = f"{prompt}\n\nПриготовь: {user_text}. Случайное число для разнообразия: {random.randint(1, 10000)}"
+
+        recipe = await generate_streaming(full_prompt, loading)
         last_recipes[message.chat.id] = recipe
         last_category[message.chat.id] = "male"
         await increment_recipe_count(message.chat.id)
@@ -894,7 +896,6 @@ async def chef(message: Message):
 
 @dp.callback_query(F.data == "voice_recipe")
 async def voice_recipe(callback: CallbackQuery):
-
     plan, _ = await get_user_plan(callback.message.chat.id)
 
     if plan != "premium" and callback.message.chat.id not in ADMIN_IDS:
@@ -905,7 +906,6 @@ async def voice_recipe(callback: CallbackQuery):
         return
 
     recipe = last_recipes.get(callback.message.chat.id)
-
     if not recipe:
         await callback.message.answer("❌ Сначала создайте рецепт")
         return
@@ -915,19 +915,10 @@ async def voice_recipe(callback: CallbackQuery):
     try:
         category = last_category.get(callback.message.chat.id, "male")
         voice = "alena" if category == "female" else "zahar"
-
-        audio_bytes = await asyncio.to_thread(
-            generate_voice_yandex, recipe, voice
-        )
-
-        audio_file = BufferedInputFile(
-            audio_bytes,
-            filename="recipe.mp3"
-        )
-
+        audio_bytes = await asyncio.to_thread(generate_voice_yandex, recipe, voice)
+        audio_file = BufferedInputFile(audio_bytes, filename="recipe.mp3")
         await callback.message.answer_voice(voice=audio_file)
         await loading.delete()
-
     except Exception as e:
         try:
             await loading.delete()
@@ -941,7 +932,6 @@ async def voice_recipe(callback: CallbackQuery):
 
 @dp.callback_query(F.data == "calc_kbju")
 async def calc_kbju(callback: CallbackQuery):
-
     plan, _ = await get_user_plan(callback.message.chat.id)
 
     if plan not in ("pro", "premium") and callback.message.chat.id not in ADMIN_IDS:
@@ -952,7 +942,6 @@ async def calc_kbju(callback: CallbackQuery):
         return
 
     recipe = last_recipes.get(callback.message.chat.id)
-
     if not recipe:
         await callback.message.answer("❌ Сначала создайте рецепт")
         return
@@ -965,7 +954,6 @@ async def calc_kbju(callback: CallbackQuery):
         )
         await loading.delete()
         await callback.message.answer(result)
-
     except Exception as e:
         try:
             await loading.delete()
@@ -979,9 +967,7 @@ async def calc_kbju(callback: CallbackQuery):
 
 @dp.callback_query(F.data == "save_recipe")
 async def save_recipe(callback: CallbackQuery):
-
     recipe = last_recipes.get(callback.message.chat.id)
-
     if not recipe:
         await callback.message.answer("❌ Нет рецепта для сохранения")
         return

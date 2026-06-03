@@ -340,7 +340,7 @@ async def generate_with_retry(system: str, user: str, max_retries: int = 3) -> s
         try:
             completion = await asyncio.to_thread(
                 client.chat.completions.create,
-                model="qwen-qwq-32b"
+                model="qwen-qwq-32b",
                 messages=[
                     {"role": "system", "content": system},
                     {"role": "user", "content": user}

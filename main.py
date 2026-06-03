@@ -4,6 +4,7 @@ import asyncio
 import aiosqlite
 import requests
 import random
+import re
 
 from datetime import date, timedelta
 from dotenv import load_dotenv
@@ -347,12 +348,14 @@ async def generate_with_retry(system: str, user: str, max_retries: int = 3) -> s
                 ],
                 temperature=0.9
             )
-            return completion.choices[0].message.content
-        except Exception as e:
-            if attempt < max_retries - 1:
-                await asyncio.sleep(3)
-                continue
-            raise e
+            result = completion.choices[0].message.content
+        result = re.sub(r'<think>.*?</think>', '', result, flags=re.DOTALL).strip()
+        return result
+    except Exception as e:
+        if attempt < max_retries - 1:
+            await asyncio.sleep(3)
+            continue
+        raise e
 
 # =========================================
 # MAIN KEYBOARD

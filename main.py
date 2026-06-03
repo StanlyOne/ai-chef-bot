@@ -7,7 +7,7 @@ import random
 
 from datetime import date, timedelta
 from dotenv import load_dotenv
-from google import genai
+from openai import OpenAI
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import (
@@ -31,7 +31,7 @@ from aiogram.client.default import DefaultBotProperties
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 YANDEX_API_KEY = os.getenv("YANDEX_API_KEY")
 
 # =========================================
@@ -47,17 +47,20 @@ logging.basicConfig(level=logging.INFO)
 if not BOT_TOKEN:
     raise ValueError("❌ BOT_TOKEN не найден")
 
-if not GEMINI_API_KEY:
-    raise ValueError("❌ GEMINI_API_KEY не найден")
+if not GROQ_API_KEY:
+    raise ValueError("❌ GROQ_API_KEY не найден")
 
 if not YANDEX_API_KEY:
     raise ValueError("❌ YANDEX_API_KEY не найден")
 
 # =========================================
-# GEMINI CLIENT
+# GROQ CLIENT
 # =========================================
 
-gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+client = OpenAI(
+    api_key=GROQ_API_KEY,
+    base_url="https://api.groq.com/openai/v1"
+)
 
 # =========================================
 # ADMINS
@@ -329,57 +332,24 @@ def generate_voice_yandex(text: str, voice: str = "zahar") -> bytes:
     return response.content
 
 # =========================================
-# GEMINI WITH RETRY
+# GROQ GENERATE
 # =========================================
 
-async def generate_with_retry(prompt: str, max_retries: int = 3) -> str:
+async def generate_with_retry(system: str, user: str, max_retries: int = 3) -> str:
     for attempt in range(max_retries):
         try:
-            response = await asyncio.to_thread(
-                gemini_client.models.generate_content,
-                model="gemini-2.0-flash",
-                contents=prompt
+            completion = await asyncio.to_thread(
+                client.chat.completions.create,
+                model="llama-3.3-70b-versatile",
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user}
+                ],
+                temperature=0.9
             )
-            return response.text
+            return completion.choices[0].message.content
         except Exception as e:
-            if "503" in str(e) and attempt < max_retries - 1:
-                await asyncio.sleep(3)
-                continue
-            raise e
-
-# =========================================
-# GEMINI STREAMING
-# =========================================
-
-async def generate_streaming(prompt: str, loading_msg, max_retries: int = 3) -> str:
-    for attempt in range(max_retries):
-        try:
-            full_text = ""
-            last_update = ""
-
-            def stream_response():
-                return list(gemini_client.models.generate_content_stream(
-                    model="gemini-2.0-flash",
-                    contents=prompt
-                ))
-
-            chunks = await asyncio.to_thread(stream_response)
-
-            for chunk in chunks:
-                if chunk.text:
-                    full_text += chunk.text
-                    if len(full_text) - len(last_update) > 150 and full_text != last_update:
-                        try:
-                            await loading_msg.edit_text(full_text)
-                            last_update = full_text
-                            await asyncio.sleep(0.3)
-                        except:
-                            pass
-
-            return full_text
-
-        except Exception as e:
-            if "503" in str(e) and attempt < max_retries - 1:
+            if attempt < max_retries - 1:
                 await asyncio.sleep(3)
                 continue
             raise e
@@ -401,6 +371,9 @@ main_keyboard = ReplyKeyboardMarkup(
         [
             KeyboardButton(text="🥬 Холодильник"),
             KeyboardButton(text="💾 Избранное")
+        ],
+        [
+            KeyboardButton(text="📢 Наш канал")
         ],
         [
             KeyboardButton(text="👑 Подписка")
@@ -476,20 +449,12 @@ def subscription_inline():
 
 @dp.message(CommandStart())
 async def start(message: Message):
-    user_name = await get_user_name(message.chat.id)
-    if not user_name:
-        waiting_for_name.add(message.chat.id)
-        await message.answer(
-            "Привет! 👋 Я TwoChefs Bot — два шефа в одном боте.\n\n"
-            "Как тебя зовут? Напиши своё имя 😊"
-        )
-    else:
-        await message.answer(
-            f"Привет, {user_name}! 👋\n\n"
-            "Выбирай категорию или напиши название блюда.\n"
-            "Например: паста карбонара, стейк, тирамису 🍽️",
-            reply_markup=main_keyboard
-        )
+    await message.answer(
+        f"Привет, {message.from_user.first_name}! 👋\n\n"
+        "Выбирай категорию или напиши название блюда.\n"
+        "Например: паста карбонара, стейк, тирамису 🍽️",
+        reply_markup=main_keyboard
+    )
 
 # =========================================
 # SUBMENUS
@@ -541,19 +506,19 @@ async def submenu_callback(callback: CallbackQuery):
     loading = await callback.message.answer("👨‍🍳 Шеф готовит рецепт...")
 
     try:
-        prompt = system_prompt_recipe
+        extra = ""
         if user_name and plan == "premium":
-            prompt += f"\n\nОбращайся к пользователю по имени {user_name}."
+            extra = f"\n\nОбращайся к пользователю по имени {user_name}."
 
-        full_prompt = f"{prompt}\n\nПриготовь: {user_text}. Используй в качестве основы: {hint}. Случайное число для разнообразия: {random.randint(1, 10000)}"
+        user_prompt = f"Приготовь: {user_text}. Используй в качестве основы: {hint}. Случайное число для разнообразия: {random.randint(1, 10000)}"
 
-        recipe = await generate_streaming(full_prompt, loading)
+        recipe = await generate_with_retry(
+            system_prompt_recipe + extra,
+            user_prompt
+        )
         last_recipes[callback.message.chat.id] = recipe
-
-        try:
-            await loading.edit_text(recipe, reply_markup=recipe_inline(plan))
-        except:
-            await loading.edit_reply_markup(reply_markup=recipe_inline(plan))
+        await loading.delete()
+        await callback.message.answer(recipe, reply_markup=recipe_inline(plan))
 
     except Exception as e:
         try:
@@ -644,6 +609,30 @@ async def buy_premium(callback: CallbackQuery):
                 InlineKeyboardButton(
                     text="👑 Оплатить PREMIUM — 699 ₽/мес",
                     url="https://t.me/tribute/app?startapp=sX7w"
+                )
+            ]]
+        )
+    )
+
+# =========================================
+# OUR CHANNEL
+# =========================================
+
+@dp.message(F.text == "📢 Наш канал")
+async def our_channel(message: Message):
+    await message.answer(
+        "📢 Наш официальный канал!\n\n"
+        "Там публикуем:\n"
+        "— новости и обновления бота\n"
+        "— лучшие рецепты недели\n"
+        "— советы шефа\n"
+        "— акции и скидки\n\n"
+        "Подписывайся чтобы ничего не пропустить 👇",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[[
+                InlineKeyboardButton(
+                    text="📢 Перейти в канал",
+                    url="https://t.me/TwoChefsNews"
                 )
             ]]
         )
@@ -760,13 +749,23 @@ async def give_plan(message: Message):
 
     try:
         plan_text = {"pro": "⭐ PRO", "premium": "👑 PREMIUM", "free": "🆓 FREE"}
-        await bot.send_message(
-            target_id,
-            f"🎉 Твой план активирован!\n\n"
-            f"👑 Текущий план: {plan_text.get(plan)}\n"
-            f"📅 Действует до: {expires_at}\n\n"
-            f"Приятного использования! 🍽️"
-        )
+
+        if plan == "premium":
+            waiting_for_name.add(target_id)
+            await bot.send_message(
+                target_id,
+                f"🎉 Твой план {plan_text.get(plan)} активирован!\n\n"
+                f"📅 Действует до: {expires_at}\n\n"
+                f"Как тебя зовут? Напиши своё имя — "
+                f"шеф будет обращаться к тебе лично 👤"
+            )
+        else:
+            await bot.send_message(
+                target_id,
+                f"🎉 Твой план {plan_text.get(plan)} активирован!\n\n"
+                f"📅 Действует до: {expires_at}\n\n"
+                f"Приятного использования! 🍽️"
+            )
     except:
         await message.answer("⚠️ Не удалось уведомить пользователя")
 
@@ -821,7 +820,7 @@ async def chef(message: Message):
         waiting_for_name.discard(message.chat.id)
         await message.answer(
             f"Отлично, {name}! 🎉\n\n"
-            "Добро пожаловать к двум шефам.\n"
+            "Теперь шеф знает тебя по имени.\n"
             "Выбирай категорию или напиши название блюда 👇",
             reply_markup=main_keyboard
         )
@@ -845,7 +844,7 @@ async def chef(message: Message):
             content = user_text
             if recipe:
                 content = f"{user_text}\n\nРецепт:\n{recipe}"
-            result = await generate_with_retry(system_prompt_kbju + "\n\n" + content)
+            result = await generate_with_retry(system_prompt_kbju, content)
             await loading.delete()
             await message.answer(result)
         except Exception as e:
@@ -867,21 +866,19 @@ async def chef(message: Message):
     loading = await message.answer("👨‍🍳 Шеф готовит рецепт...")
 
     try:
-        prompt = system_prompt_recipe
+        extra = ""
         if user_name and plan == "premium":
-            prompt += f"\n\nОбращайся к пользователю по имени {user_name}."
+            extra = f"\n\nОбращайся к пользователю по имени {user_name}."
 
-        full_prompt = f"{prompt}\n\nПриготовь: {user_text}. Случайное число для разнообразия: {random.randint(1, 10000)}"
-
-        recipe = await generate_streaming(full_prompt, loading)
+        recipe = await generate_with_retry(
+            system_prompt_recipe + extra,
+            f"{user_text}. Случайное число для разнообразия: {random.randint(1, 10000)}"
+        )
         last_recipes[message.chat.id] = recipe
         last_category[message.chat.id] = "male"
         await increment_recipe_count(message.chat.id)
-
-        try:
-            await loading.edit_text(recipe, reply_markup=recipe_inline(plan))
-        except:
-            await loading.edit_reply_markup(reply_markup=recipe_inline(plan))
+        await loading.delete()
+        await message.answer(recipe, reply_markup=recipe_inline(plan))
 
     except Exception as e:
         try:
@@ -950,7 +947,8 @@ async def calc_kbju(callback: CallbackQuery):
 
     try:
         result = await generate_with_retry(
-            system_prompt_kbju + "\n\nРассчитай КБЖУ для этого рецепта:\n\n" + recipe
+            system_prompt_kbju,
+            f"Рассчитай КБЖУ для этого рецепта:\n\n{recipe}"
         )
         await loading.delete()
         await callback.message.answer(result)

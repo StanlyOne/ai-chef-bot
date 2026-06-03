@@ -8,7 +8,7 @@ import re
 
 from datetime import date, timedelta
 from dotenv import load_dotenv
-from openai import OpenAI
+from google import genai
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import (
@@ -32,7 +32,7 @@ from aiogram.client.default import DefaultBotProperties
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 YANDEX_API_KEY = os.getenv("YANDEX_API_KEY")
 
 # =========================================
@@ -48,20 +48,17 @@ logging.basicConfig(level=logging.INFO)
 if not BOT_TOKEN:
     raise ValueError("❌ BOT_TOKEN не найден")
 
-if not GROQ_API_KEY:
-    raise ValueError("❌ GROQ_API_KEY не найден")
+if not GEMINI_API_KEY:
+    raise ValueError("❌ GEMINI_API_KEY не найден")
 
 if not YANDEX_API_KEY:
     raise ValueError("❌ YANDEX_API_KEY не найден")
 
 # =========================================
-# GROQ CLIENT
+# GEMINI CLIENT
 # =========================================
 
-client = OpenAI(
-    api_key=GROQ_API_KEY,
-    base_url="https://api.groq.com/openai/v1"
-)
+gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 
 # =========================================
 # ADMINS
@@ -179,12 +176,6 @@ system_prompt_recipe = """
 - Только практичный совет который реально улучшит вкус блюда
 - Никаких странных фраз и канцелярщины
 - Совет должен относиться именно к этому блюду
-- В ПП и здоровом питании → советы про замену на более полезные ингредиенты
-- В мясных блюдах → советы про прожарку, маринады, специи
-- В десертах → советы про текстуру, украшение, подачу
-- Примеры хороших советов:
-  "Чтобы авокадо не потемнел — сбрызните его лимонным соком сразу после нарезки"
-  "Куриная грудка будет сочнее если дать ей отдохнуть 5 минут после духовки"
 
 РЕЦЕПТ — строго на 1 порцию, не более 6 шагов, до 40 минут.
 
@@ -372,26 +363,20 @@ def generate_voice_yandex(text: str, voice: str = "zahar") -> bytes:
     return response.content
 
 # =========================================
-# GROQ GENERATE
+# GEMINI GENERATE WITH RETRY
 # =========================================
 
 async def generate_with_retry(system: str, user: str, max_retries: int = 3) -> str:
     for attempt in range(max_retries):
         try:
-            completion = await asyncio.to_thread(
-                client.chat.completions.create,
-                model="qwen/qwen3-32b",
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user}
-                ],
-                temperature=0.9
+            response = await asyncio.to_thread(
+                gemini_client.models.generate_content,
+                model="gemini-2.5-flash",
+                contents=system + "\n\n" + user
             )
-            result = completion.choices[0].message.content
-            result = re.sub(r'<think>.*?</think>', '', result, flags=re.DOTALL).strip()
-            return result
+            return response.text
         except Exception as e:
-            if attempt < max_retries - 1:
+            if "503" in str(e) and attempt < max_retries - 1:
                 await asyncio.sleep(3)
                 continue
             raise e

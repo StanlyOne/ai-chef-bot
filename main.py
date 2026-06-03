@@ -337,7 +337,7 @@ async def generate_with_retry(prompt: str, max_retries: int = 3) -> str:
         try:
             response = await asyncio.to_thread(
                 gemini_client.models.generate_content,
-                model="gemini-2.5-flash",
+                model="gemini-2.0-flash",
                 contents=prompt
             )
             return response.text
@@ -359,7 +359,7 @@ async def generate_streaming(prompt: str, loading_msg, max_retries: int = 3) -> 
 
             def stream_response():
                 return list(gemini_client.models.generate_content_stream(
-                    model="gemini-2.5-flash",
+                    model="gemini-2.0-flash",
                     contents=prompt
                 ))
 

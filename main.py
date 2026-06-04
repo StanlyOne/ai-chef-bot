@@ -8,7 +8,7 @@ import re
 
 from datetime import date, timedelta
 from dotenv import load_dotenv
-from google import genai
+from openai import OpenAI
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import (
@@ -32,7 +32,7 @@ from aiogram.client.default import DefaultBotProperties
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 YANDEX_API_KEY = os.getenv("YANDEX_API_KEY")
 
 # =========================================
@@ -48,17 +48,22 @@ logging.basicConfig(level=logging.INFO)
 if not BOT_TOKEN:
     raise ValueError("❌ BOT_TOKEN не найден")
 
-if not GEMINI_API_KEY:
-    raise ValueError("❌ GEMINI_API_KEY не найден")
+if not OPENROUTER_API_KEY:
+    raise ValueError("❌ OPENROUTER_API_KEY не найден")
 
 if not YANDEX_API_KEY:
     raise ValueError("❌ YANDEX_API_KEY не найден")
 
 # =========================================
-# GEMINI CLIENT
+# OPENROUTER CLIENT
 # =========================================
 
-gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+client = OpenAI(
+    api_key=OPENROUTER_API_KEY,
+    base_url="https://openrouter.ai/api/v1"
+)
+
+AI_MODEL = "google/gemini-2.5-flash"
 
 # =========================================
 # ADMINS
@@ -386,45 +391,47 @@ def generate_voice_yandex(text: str, voice: str = "zahar") -> bytes:
     return response.content
 
 # =========================================
-# GEMINI WITH RETRY
+# OPENROUTER GENERATE WITH RETRY
 # =========================================
 
 async def generate_with_retry(prompt: str, max_retries: int = 3) -> str:
     for attempt in range(max_retries):
         try:
-            response = await asyncio.to_thread(
-                gemini_client.models.generate_content,
-                model="gemini-2.5-flash",
-                contents=prompt
+            completion = await asyncio.to_thread(
+                client.chat.completions.create,
+                model=AI_MODEL,
+                messages=[{"role": "user", "content": prompt}]
             )
-            return response.text
+            return completion.choices[0].message.content
         except Exception as e:
-            if "503" in str(e) and attempt < max_retries - 1:
+            if ("503" in str(e) or "429" in str(e)) and attempt < max_retries - 1:
                 await asyncio.sleep(3)
                 continue
             raise e
 
 # =========================================
-# GEMINI STREAMING
+# OPENROUTER STREAMING
 # =========================================
 
 async def generate_streaming(prompt: str, loading_msg, max_retries: int = 3) -> str:
     for attempt in range(max_retries):
         try:
+            def stream_response():
+                return client.chat.completions.create(
+                    model=AI_MODEL,
+                    messages=[{"role": "user", "content": prompt}],
+                    stream=True
+                )
+
+            stream = await asyncio.to_thread(stream_response)
+
             full_text = ""
             last_update = ""
 
-            def stream_response():
-                return list(gemini_client.models.generate_content_stream(
-                    model="gemini-2.5-flash",
-                    contents=prompt
-                ))
-
-            chunks = await asyncio.to_thread(stream_response)
-
-            for chunk in chunks:
-                if chunk.text:
-                    full_text += chunk.text
+            for chunk in stream:
+                delta = chunk.choices[0].delta.content
+                if delta:
+                    full_text += delta
                     if len(full_text) - len(last_update) > 150 and full_text != last_update:
                         try:
                             await loading_msg.edit_text(full_text)
@@ -436,7 +443,7 @@ async def generate_streaming(prompt: str, loading_msg, max_retries: int = 3) -> 
             return full_text
 
         except Exception as e:
-            if "503" in str(e) and attempt < max_retries - 1:
+            if ("503" in str(e) or "429" in str(e)) and attempt < max_retries - 1:
                 await asyncio.sleep(3)
                 continue
             raise e

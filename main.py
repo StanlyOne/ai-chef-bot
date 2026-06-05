@@ -21,7 +21,7 @@ from aiogram.types import (
     BufferedInputFile,
 )
 
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, Command
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 
@@ -98,6 +98,8 @@ FAST_VARIETY = [
     "жареный рис", "питта с начинкой", "тост с авокадо",
     "быстрый омлет", "макароны с соусом", "блины"
 ]
+
+ALL_VARIETY = MEAT_VARIETY + DESSERT_VARIETY + PP_VARIETY + FAST_VARIETY
 
 def get_variety_hint(category: str) -> str:
     hints = {
@@ -576,6 +578,75 @@ async def start(message: Message):
             "Например: паста карбонара, стейк, тирамису 🍽️",
             reply_markup=main_keyboard
         )
+
+# =========================================
+# /HELP COMMAND
+# =========================================
+
+@dp.message(Command("help"))
+async def help_command(message: Message):
+    await message.answer(
+        "👨‍🍳 Как пользоваться TwoChefs Bot:\n\n"
+        "🍽️ Просто напиши название блюда — например паста карбонара, "
+        "стейк, тирамису — и шеф приготовит рецепт.\n\n"
+        "📋 Используй кнопки меню:\n"
+        "🥗 ПП рецепт — полезные блюда\n"
+        "🔥 Быстрый рецепт — готовка до 20 минут\n"
+        "🍰 Десерт — сладкое и выпечка\n"
+        "🥩 Мясо — сытные мясные блюда\n"
+        "🥬 Холодильник — рецепт из твоих продуктов\n"
+        "💾 Избранное — сохранённые рецепты\n\n"
+        "💡 Команда /recipe — случайный рецепт от шефа\n\n"
+        "👑 PRO и PREMIUM открывают КБЖУ, озвучку рецептов "
+        "и безлимит — смотри раздел Подписка.\n\n"
+        "Приятной готовки! 🍳",
+        reply_markup=main_keyboard
+    )
+
+# =========================================
+# /RECIPE COMMAND (случайный рецепт)
+# =========================================
+
+@dp.message(Command("recipe"))
+async def recipe_command(message: Message):
+    plan, count = await get_user_plan(message.chat.id)
+    user_name = await get_user_name(message.chat.id)
+
+    limit = PLAN_LIMITS.get(plan, 3)
+    if count >= limit and message.chat.id not in ADMIN_IDS:
+        await message.answer(
+            f"❌ Лимит рецептов на сегодня исчерпан ({limit} шт)\n\n"
+            "👑 Улучшите план в разделе Подписка"
+        )
+        return
+
+    dish = random.choice(ALL_VARIETY)
+    last_category[message.chat.id] = "male"
+    loading = await message.answer("👨‍🍳 Шеф готовит случайный рецепт...")
+
+    try:
+        extra = ""
+        if user_name and plan == "premium":
+            extra = f"\n\nОбращайся к пользователю по имени {user_name}."
+
+        recipe = await generate_streaming(
+            system_prompt_recipe + extra + "\n\nПриготовь блюдо: " + dish + ".",
+            loading
+        )
+        last_recipes[message.chat.id] = recipe
+        await increment_recipe_count(message.chat.id)
+
+        try:
+            await loading.edit_text(recipe, reply_markup=recipe_inline(plan))
+        except:
+            await loading.edit_reply_markup(reply_markup=recipe_inline(plan))
+
+    except Exception as e:
+        try:
+            await loading.delete()
+        except:
+            pass
+        await message.answer(f"❌ Ошибка:\n{e}")
 
 # =========================================
 # SUBMENUS

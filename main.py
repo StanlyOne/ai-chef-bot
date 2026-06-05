@@ -134,29 +134,24 @@ def extract_title(recipe: str) -> str:
     lines = [l.strip() for l in recipe.split("\n") if l.strip()]
     for line in lines:
         low = line.lower()
-        # пропускаем служебные заголовки
         if low.startswith("ингредиент") or low.startswith("приготовлен") or low.startswith("совет"):
             continue
-        # пропускаем строки ингредиентов (с дефисом или граммовкой)
         if line.startswith("-") or line.startswith("•"):
             continue
         if re.search(r'\d+\s*(г|кг|мл|л|шт)\b', low):
             continue
-        # пропускаем шаги приготовления (начинаются с цифры и точки)
         if re.match(r'^\d+\.', line):
             continue
-        # пропускаем слишком длинные строки (это описание)
         if len(line) > 55:
             continue
-        # пропускаем явные предложения-описания
         if line.endswith(".") or line.endswith("!") or line.endswith("?"):
             continue
         return line
-    # запасной вариант — первая короткая строка без граммовки
     for line in lines:
         if not re.search(r'\d+\s*(г|кг|мл|л)', line.lower()) and len(line) < 55:
             return line
     return "Рецепт"
+
 # =========================================
 # PROMPTS
 # =========================================
@@ -388,6 +383,19 @@ async def increment_recipe_count(chat_id):
         """, (chat_id, today, today))
         await db.commit()
 
+async def activate_plan(target_id, plan):
+    expires_at = str(date.today() + timedelta(days=30))
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            INSERT INTO subscriptions (chat_id, plan, recipes_today, last_reset, expires_at)
+            VALUES (?, ?, 0, ?, ?)
+            ON CONFLICT(chat_id) DO UPDATE SET
+                plan = ?,
+                expires_at = ?
+        """, (target_id, plan, str(date.today()), expires_at, plan, expires_at))
+        await db.commit()
+    return expires_at
+
 # =========================================
 # USER MEMORY HELPERS
 # =========================================
@@ -417,6 +425,7 @@ async def save_user_name(chat_id, name):
 last_recipes = {}
 last_category = {}
 waiting_for_name = set()
+waiting_for_id = set()
 
 # =========================================
 # YANDEX TTS
@@ -642,11 +651,29 @@ async def help_command(message: Message):
         "🥩 Мясо — сытные мясные блюда\n"
         "🥬 Холодильник — рецепт из твоих продуктов\n"
         "💾 Избранное — сохранённые рецепты\n\n"
-        "💡 Команда /recipe — случайный рецепт от шефа\n\n"
+        "💡 Команда /recipe — случайный рецепт от шефа\n"
+        "💳 Команда /activate — активировать подписку после оплаты\n\n"
         "👑 PRO и PREMIUM открывают КБЖУ, озвучку рецептов "
         "и безлимит — смотри раздел Подписка.\n\n"
         "Приятной готовки! 🍳",
         reply_markup=main_keyboard
+    )
+
+# =========================================
+# /ACTIVATE COMMAND
+# =========================================
+
+@dp.message(Command("activate"))
+async def activate_command(message: Message):
+    waiting_for_id.add(message.chat.id)
+    await message.answer(
+        "💳 Активация подписки\n\n"
+        "Если ты уже оплатил PRO или PREMIUM — пришли свой Telegram ID.\n\n"
+        "Как узнать ID:\n"
+        "1️⃣ Напиши боту @userinfobot\n"
+        "2️⃣ Он пришлёт твой ID (число)\n"
+        "3️⃣ Скопируй это число и отправь сюда\n\n"
+        "После этого мы активируем твою подписку в течение нескольких часов 🚀"
     )
 
 # =========================================
@@ -818,8 +845,8 @@ async def buy_pro(callback: CallbackQuery):
         "— 10 рецептов в день\n"
         "— точный расчёт КБЖУ\n"
         "— эксклюзивные рецепты в закрытом канале\n\n"
-        "После оплаты напиши нам свой Telegram ID 👇\n"
-        "Его можно узнать написав @userinfobot",
+        "После оплаты ты попадёшь в закрытый канал.\n"
+        "Затем напиши команду /activate чтобы включить PRO в боте 🚀",
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[[
                 InlineKeyboardButton(
@@ -841,8 +868,8 @@ async def buy_premium(callback: CallbackQuery):
         "— бот знает тебя по имени 👤\n"
         "— эксклюзивные рецепты в закрытом канале\n"
         "— первым получаешь новые функции\n\n"
-        "После оплаты напиши нам свой Telegram ID 👇\n"
-        "Его можно узнать написав @userinfobot",
+        "После оплаты ты попадёшь в закрытый канал.\n"
+        "Затем напиши команду /activate чтобы включить PREMIUM в боте 🚀",
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[[
                 InlineKeyboardButton(
@@ -919,6 +946,10 @@ async def fridge_mode(message: Message):
 
 @dp.message(F.text.regexp(r"^\d+$"))
 async def open_recipe(message: Message):
+    # если админ ждёт ID — не открываем рецепт, пусть обработает chef
+    if message.chat.id in waiting_for_id:
+        return
+
     index = int(message.text) - 1
 
     async with aiosqlite.connect(DB_PATH) as db:
@@ -986,41 +1017,9 @@ async def give_plan(message: Message):
         await message.answer("❌ План должен быть: pro, premium или free")
         return
 
-    expires_at = str(date.today() + timedelta(days=30))
-
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("""
-            INSERT INTO subscriptions (chat_id, plan, recipes_today, last_reset, expires_at)
-            VALUES (?, ?, 0, ?, ?)
-            ON CONFLICT(chat_id) DO UPDATE SET
-                plan = ?,
-                expires_at = ?
-        """, (target_id, plan, str(date.today()), expires_at, plan, expires_at))
-        await db.commit()
-
+    expires_at = await activate_plan(target_id, plan)
     await message.answer(f"✅ Пользователю {target_id} выдан план {plan.upper()} до {expires_at}")
-
-    try:
-        plan_text = {"pro": "⭐ PRO", "premium": "👑 PREMIUM", "free": "🆓 FREE"}
-
-        if plan == "premium":
-            waiting_for_name.add(target_id)
-            await bot.send_message(
-                target_id,
-                f"🎉 Твой план {plan_text.get(plan)} активирован!\n\n"
-                f"📅 Действует до: {expires_at}\n\n"
-                f"Как тебя зовут? Напиши своё имя — "
-                f"шеф будет обращаться к тебе лично 👤"
-            )
-        else:
-            await bot.send_message(
-                target_id,
-                f"🎉 Твой план {plan_text.get(plan)} активирован!\n\n"
-                f"📅 Действует до: {expires_at}\n\n"
-                f"Приятного использования! 🍽️"
-            )
-    except:
-        await message.answer("⚠️ Не удалось уведомить пользователя")
+    await notify_user_activated(target_id, plan, expires_at)
 
 @dp.message(F.text.startswith("/check"))
 async def check_plan(message: Message):
@@ -1056,6 +1055,73 @@ async def check_plan(message: Message):
     )
 
 # =========================================
+# NOTIFY USER ABOUT ACTIVATION
+# =========================================
+
+async def notify_user_activated(target_id, plan, expires_at):
+    try:
+        plan_text = {"pro": "⭐ PRO", "premium": "👑 PREMIUM", "free": "🆓 FREE"}
+        if plan == "premium":
+            waiting_for_name.add(target_id)
+            await bot.send_message(
+                target_id,
+                f"🎉 Твой план {plan_text.get(plan)} активирован!\n\n"
+                f"📅 Действует до: {expires_at}\n\n"
+                f"Как тебя зовут? Напиши своё имя — "
+                f"шеф будет обращаться к тебе лично 👤"
+            )
+        else:
+            await bot.send_message(
+                target_id,
+                f"🎉 Твой план {plan_text.get(plan)} активирован!\n\n"
+                f"📅 Действует до: {expires_at}\n\n"
+                f"Приятного использования! 🍽️"
+            )
+    except:
+        pass
+
+# =========================================
+# ADMIN ACTIVATION CALLBACKS (кнопки)
+# =========================================
+
+@dp.callback_query(F.data.startswith("admin_give_"))
+async def admin_give_callback(callback: CallbackQuery):
+    if callback.message.chat.id not in ADMIN_IDS:
+        await callback.answer("Недоступно", show_alert=True)
+        return
+
+    # формат: admin_give_pro_123456789
+    parts = callback.data.split("_")
+    plan = parts[2]
+    target_id = int(parts[3])
+
+    if plan == "reject":
+        await callback.message.edit_text(
+            callback.message.text + "\n\n❌ Заявка отклонена."
+        )
+        await callback.answer("Отклонено")
+        return
+
+    expires_at = await activate_plan(target_id, plan)
+    await notify_user_activated(target_id, plan, expires_at)
+
+    await callback.message.edit_text(
+        callback.message.text + f"\n\n✅ Выдан {plan.upper()} до {expires_at}"
+    )
+    await callback.answer(f"✅ {plan.upper()} активирован")
+
+@dp.callback_query(F.data.startswith("admin_reject_"))
+async def admin_reject_callback(callback: CallbackQuery):
+    if callback.message.chat.id not in ADMIN_IDS:
+        await callback.answer("Недоступно", show_alert=True)
+        return
+
+    await callback.message.edit_text(
+        callback.message.text + "\n\n❌ Заявка отклонена."
+    )
+    await callback.answer("Отклонено")
+
+# =========================================
 # MAIN CHEF
 # =========================================
 
@@ -1067,6 +1133,7 @@ async def chef(message: Message):
 
     user_text = message.text
 
+    # ===== ОЖИДАНИЕ ИМЕНИ =====
     if message.chat.id in waiting_for_name:
         name = user_text.strip()
         await save_user_name(message.chat.id, name)
@@ -1076,6 +1143,55 @@ async def chef(message: Message):
             "Теперь шеф знает тебя по имени.\n"
             "Выбирай категорию или напиши название блюда 👇",
             reply_markup=main_keyboard
+        )
+        return
+
+    # ===== ОЖИДАНИЕ ID (активация) =====
+    if message.chat.id in waiting_for_id:
+        waiting_for_id.discard(message.chat.id)
+        digits = re.sub(r"\D", "", user_text)
+
+        if not digits:
+            await message.answer(
+                "❌ Это не похоже на ID. Пришли число которое дал @userinfobot.\n"
+                "Попробуй снова — напиши /activate"
+            )
+            return
+
+        requester_name = message.from_user.first_name or "Пользователь"
+        requester_username = f"@{message.from_user.username}" if message.from_user.username else "без username"
+
+        # уведомляем всех админов
+        admin_kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="⭐ Выдать PRO", callback_data=f"admin_give_pro_{digits}"),
+                    InlineKeyboardButton(text="👑 Выдать PREMIUM", callback_data=f"admin_give_premium_{digits}")
+                ],
+                [
+                    InlineKeyboardButton(text="❌ Отклонить", callback_data=f"admin_reject_{digits}")
+                ]
+            ]
+        )
+
+        for admin_id in ADMIN_IDS:
+            try:
+                await bot.send_message(
+                    admin_id,
+                    f"🔔 Запрос на активацию подписки\n\n"
+                    f"👤 Имя: {requester_name}\n"
+                    f"🔗 Username: {requester_username}\n"
+                    f"🆔 ID: {digits}\n\n"
+                    f"Проверь оплату в Tribute и выбери план 👇",
+                    reply_markup=admin_kb
+                )
+            except:
+                pass
+
+        await message.answer(
+            "✅ Спасибо! Твой запрос отправлен.\n\n"
+            "Мы проверим оплату и активируем подписку в течение нескольких часов 🚀\n"
+            "Ты получишь уведомление когда всё будет готово!"
         )
         return
 

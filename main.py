@@ -134,17 +134,29 @@ def extract_title(recipe: str) -> str:
     lines = [l.strip() for l in recipe.split("\n") if l.strip()]
     for line in lines:
         low = line.lower()
-        if low.startswith("ингредиент") or low.startswith("приготовлен"):
+        # пропускаем служебные заголовки
+        if low.startswith("ингредиент") or low.startswith("приготовлен") or low.startswith("совет"):
             continue
-        if len(line) > 60:
+        # пропускаем строки ингредиентов (с дефисом или граммовкой)
+        if line.startswith("-") or line.startswith("•"):
             continue
+        if re.search(r'\d+\s*(г|кг|мл|л|шт)\b', low):
+            continue
+        # пропускаем шаги приготовления (начинаются с цифры и точки)
+        if re.match(r'^\d+\.', line):
+            continue
+        # пропускаем слишком длинные строки (это описание)
+        if len(line) > 55:
+            continue
+        # пропускаем явные предложения-описания
         if line.endswith(".") or line.endswith("!") or line.endswith("?"):
             continue
-        if "," in line and len(line) > 40:
-            continue
         return line
-    return lines[0] if lines else "Рецепт"
-
+    # запасной вариант — первая короткая строка без граммовки
+    for line in lines:
+        if not re.search(r'\d+\s*(г|кг|мл|л)', line.lower()) and len(line) < 55:
+            return line
+    return "Рецепт"
 # =========================================
 # PROMPTS
 # =========================================

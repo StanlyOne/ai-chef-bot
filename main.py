@@ -545,7 +545,8 @@ main_keyboard = ReplyKeyboardMarkup(
             KeyboardButton(text="📢 Наш канал")
         ],
         [
-            KeyboardButton(text="👑 Подписка")
+            KeyboardButton(text="👑 Подписка"),
+            KeyboardButton(text="💳 Активировать")
         ]
     ],
     resize_keyboard=True
@@ -650,9 +651,9 @@ async def help_command(message: Message):
         "🍰 Десерт — сладкое и выпечка\n"
         "🥩 Мясо — сытные мясные блюда\n"
         "🥬 Холодильник — рецепт из твоих продуктов\n"
-        "💾 Избранное — сохранённые рецепты\n\n"
-        "💡 Команда /recipe — случайный рецепт от шефа\n"
-        "💳 Команда /activate — активировать подписку после оплаты\n\n"
+        "💾 Избранное — сохранённые рецепты\n"
+        "💳 Активировать — включить подписку после оплаты\n\n"
+        "💡 Команда /recipe — случайный рецепт от шефа\n\n"
         "👑 PRO и PREMIUM открывают КБЖУ, озвучку рецептов "
         "и безлимит — смотри раздел Подписка.\n\n"
         "Приятной готовки! 🍳",
@@ -660,21 +661,28 @@ async def help_command(message: Message):
     )
 
 # =========================================
-# /ACTIVATE COMMAND
+# ACTIVATE (команда и кнопка)
 # =========================================
+
+ACTIVATE_TEXT = (
+    "💳 Активация подписки\n\n"
+    "Если ты уже оплатил PRO или PREMIUM — пришли свой Telegram ID.\n\n"
+    "Как узнать ID:\n"
+    "1️⃣ Напиши боту @userinfobot\n"
+    "2️⃣ Он пришлёт твой ID (число)\n"
+    "3️⃣ Скопируй это число и отправь сюда\n\n"
+    "После этого мы активируем твою подписку в течение нескольких часов 🚀"
+)
 
 @dp.message(Command("activate"))
 async def activate_command(message: Message):
     waiting_for_id.add(message.chat.id)
-    await message.answer(
-        "💳 Активация подписки\n\n"
-        "Если ты уже оплатил PRO или PREMIUM — пришли свой Telegram ID.\n\n"
-        "Как узнать ID:\n"
-        "1️⃣ Напиши боту @userinfobot\n"
-        "2️⃣ Он пришлёт твой ID (число)\n"
-        "3️⃣ Скопируй это число и отправь сюда\n\n"
-        "После этого мы активируем твою подписку в течение нескольких часов 🚀"
-    )
+    await message.answer(ACTIVATE_TEXT)
+
+@dp.message(F.text == "💳 Активировать")
+async def activate_button(message: Message):
+    waiting_for_id.add(message.chat.id)
+    await message.answer(ACTIVATE_TEXT)
 
 # =========================================
 # /RECIPE COMMAND (случайный рецепт)
@@ -846,7 +854,7 @@ async def buy_pro(callback: CallbackQuery):
         "— точный расчёт КБЖУ\n"
         "— эксклюзивные рецепты в закрытом канале\n\n"
         "После оплаты ты попадёшь в закрытый канал.\n"
-        "Затем напиши команду /activate чтобы включить PRO в боте 🚀",
+        "Затем нажми кнопку 💳 Активировать чтобы включить PRO в боте 🚀",
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[[
                 InlineKeyboardButton(
@@ -869,7 +877,7 @@ async def buy_premium(callback: CallbackQuery):
         "— эксклюзивные рецепты в закрытом канале\n"
         "— первым получаешь новые функции\n\n"
         "После оплаты ты попадёшь в закрытый канал.\n"
-        "Затем напиши команду /activate чтобы включить PREMIUM в боте 🚀",
+        "Затем нажми кнопку 💳 Активировать чтобы включить PREMIUM в боте 🚀",
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[[
                 InlineKeyboardButton(
@@ -946,7 +954,7 @@ async def fridge_mode(message: Message):
 
 @dp.message(F.text.regexp(r"^\d+$"))
 async def open_recipe(message: Message):
-    # если админ ждёт ID — не открываем рецепт, пусть обработает chef
+    # если админ/пользователь ждёт ID — не открываем рецепт, пусть обработает chef
     if message.chat.id in waiting_for_id:
         return
 
@@ -1095,13 +1103,6 @@ async def admin_give_callback(callback: CallbackQuery):
     plan = parts[2]
     target_id = int(parts[3])
 
-    if plan == "reject":
-        await callback.message.edit_text(
-            callback.message.text + "\n\n❌ Заявка отклонена."
-        )
-        await callback.answer("Отклонено")
-        return
-
     expires_at = await activate_plan(target_id, plan)
     await notify_user_activated(target_id, plan, expires_at)
 
@@ -1154,14 +1155,13 @@ async def chef(message: Message):
         if not digits:
             await message.answer(
                 "❌ Это не похоже на ID. Пришли число которое дал @userinfobot.\n"
-                "Попробуй снова — напиши /activate"
+                "Попробуй снова — нажми 💳 Активировать"
             )
             return
 
         requester_name = message.from_user.first_name or "Пользователь"
         requester_username = f"@{message.from_user.username}" if message.from_user.username else "без username"
 
-        # уведомляем всех админов
         admin_kb = InlineKeyboardMarkup(
             inline_keyboard=[
                 [

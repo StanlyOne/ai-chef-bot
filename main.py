@@ -241,9 +241,11 @@ system_prompt_kbju = """
 """
 
 system_prompt_question = """
-Ты — кулинарный помощник. Отвечаешь ТОЛЬКО на вопросы о еде и готовке.
-Коротко и по делу на русском языке. Никакой аюрведы, медицины и философии.
-Если вопрос не про еду — говори: "Я только про кулинарию 👨‍🍳"
+Ты — кулинарный помощник и опытный шеф-повар. Отвечаешь ТОЛЬКО на вопросы о еде и готовке.
+Отвечай коротко, по делу и полезно на русском языке.
+Никакого markdown. Никакой аюрведы, медицины и философии.
+Если пользователь задаёт вопрос про конкретный рецепт — отвечай именно про этот рецепт, не предлагай новый.
+Если вопрос совсем не про еду — говори: "Я только про кулинарию 👨‍🍳"
 """
 
 # =========================================
@@ -456,7 +458,11 @@ def is_food_question(text: str) -> bool:
     keywords = [
         "что такое", "что это", "как называется", "расскажи про",
         "объясни", "что значит", "зачем", "почему", "можно ли",
-        "как правильно", "чем отличается", "что лучше"
+        "как правильно", "чем отличается", "что лучше",
+        "прожарка", "прожарку", "прожарки", "сколько", "какая", "какой",
+        "какие", "температур", "время", "градус", "минут",
+        "чем заменить", "а если", "подойдёт", "подойдет", "нужно ли",
+        "как долго", "когда", "обязательно ли", "а можно"
     ]
     return any(kw in text.lower() for kw in keywords)
 
@@ -828,6 +834,20 @@ def is_kbju_request(text: str) -> bool:
 # ADMIN COMMANDS
 # =========================================
 
+@dp.message(F.text.startswith("/setname"))
+async def set_name(message: Message):
+    if message.chat.id not in ADMIN_IDS:
+        return
+
+    parts = message.text.split(maxsplit=1)
+    if len(parts) != 2:
+        await message.answer("Использование: /setname Имя")
+        return
+
+    name = parts[1].strip()
+    await save_user_name(message.chat.id, name)
+    await message.answer(f"✅ Готово! Теперь шеф будет звать тебя по имени: {name} 👤")
+
 @dp.message(F.text.startswith("/give"))
 async def give_plan(message: Message):
     if message.chat.id not in ADMIN_IDS:
@@ -974,7 +994,15 @@ async def chef(message: Message):
     if is_food_question(user_text):
         loading = await message.answer("👨‍🍳 Отвечаю...")
         try:
-            result = await generate_with_retry(system_prompt_question + "\n\n" + user_text)
+            recipe = last_recipes.get(message.chat.id)
+            question_content = user_text
+            if recipe:
+                question_content = (
+                    f"Вот последний рецепт который ты только что дал пользователю:\n\n{recipe}\n\n"
+                    f"Теперь пользователь задаёт вопрос по этому рецепту: {user_text}\n\n"
+                    f"Ответь на вопрос с учётом этого рецепта. Не предлагай новый рецепт."
+                )
+            result = await generate_with_retry(system_prompt_question + "\n\n" + question_content)
             await loading.delete()
             await message.answer(result)
         except Exception as e:
